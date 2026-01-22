@@ -1,0 +1,3 @@
+sudo docker run -e SNYK_CLIENT_ID="b5fa1047-7052-4c25-8f33-f8e5234ef29d" -e SNYK_CLIENT_SECRET="snyk_cs_ipzUU8NvMK_D_KCRa4uzd15t943sFXPyME2GhV_b7Po_v1" -e
+STACKHAWK_API_KEY="hawk.ZwQOAPbFwfB0KQ9yNBEa.y9tvp1QplHMfvSuy9MfU" -e GITHUB_PAT="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" -e STACKHAWK_PROJECTS='[{"name":"infosec-portal", "url": "ht
+tps://github.com/simetrik-inc/infosec-portal"}]' -e WEBHOOK_URL='https://mgonzalezg.app.n8n.cloud/webhook/1cbd69f4-e7f2-4002-9738-8f74e551258a' scan-runner:latest
