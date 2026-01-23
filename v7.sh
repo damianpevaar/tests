@@ -221,7 +221,9 @@ done
 
 echo "===== Scan Runner Completed ====="
 
-------------- ###############################################
+------------- 
+
+###############################################
 # Process StackHawk Projects
 ###############################################
 cd /app/stackhawk-projects
@@ -233,6 +235,7 @@ jq -c '.[]' hawk.json | while read proj; do
 
   echo "Processing StackHawk project: $NAME"
 
+  # GitHub repo
   if [[ "$URL" != "null" && "$URL" != "" ]]; then
     echo "→ Cloning repo from $URL"
     git clone "https://$GITHUB_PAT@${URL#https://}"
@@ -241,49 +244,31 @@ jq -c '.[]' hawk.json | while read proj; do
     echo "→ Running hawk scan"
     set +e
     
-    # ---------------------------------------------------------
-    # CORRECCIÓN 1: Capturamos la salida UNA SOLA VEZ
-    # ---------------------------------------------------------
+    # --- CORRECCIÓN: EJECUCIÓN ÚNICA ---
+    # Ejecutamos 1 sola vez y guardamos todo el texto de salida en una variable
     SCAN_OUTPUT=$(hawk scan --no-progress 2>&1)
     
-    # Buscamos el ID dentro de la salida guardada
+    # Buscamos el ID dentro del texto guardado
     SCAN_ID=$(echo "$SCAN_OUTPUT" | grep -i "scan id" | awk '{print $NF}')
     set -e
     
-    echo "Scan ID encontrado: $SCAN_ID"
+    echo "Scan ID: $SCAN_ID"
     
-    # ---------------------------------------------------------
-    # CORRECCIÓN 2: Lógica para enviar aunque no haya Ticket ID
-    # ---------------------------------------------------------
-    if [[ -n "$SCAN_ID" ]]; then
-        
-        # CASO A: Tenemos un TICKET_ID real (diferente de 0)
-        if [[ "$TICKET_ID" != "0" && -n "$TICKET_ID" ]]; then
-            echo "→ Notifying webhook (Con Ticket ID)"
-            curl -X POST "$WEBHOOK_URL/stackhawk-cloud-sec/$NAME" \
-                -H "Content-Type: application/json" \
-                --data "{ \"scan_id\": \"$SCAN_ID\", \"ticket_id\": \"$TICKET_ID\" }"
-        
-        # CASO B: No tenemos Ticket (es 0), enviamos al genérico
-        else
-            echo "→ Notifying webhook (Sin Ticket - Escaneo Genérico)"
-            # Nota: Aquí asumo que tu WEBHOOK_URL base es https://mgonzalezg.app.n8n.cloud/webhook
-            # Ajustamos la ruta para que llegue a /stackhawk-scan
-            
-            # Opción 1: Si tu WEBHOOK_URL termina en el ID largo:
-            # curl -X POST "${WEBHOOK_URL}/stackhawk-scan" ...
-            
-            # Opción 2: Usando la URL completa directa (Más seguro para probar):
-            curl -X POST "https://mgonzalezg.app.n8n.cloud/webhook/stackhawk-scan" \
-                -H "Content-Type: application/json" \
-                --data "{ \"scan_id\": \"$SCAN_ID\", \"project_name\": \"$NAME\", \"status\": \"completed_no_ticket\" }"
-        fi
-
+    # --- LÓGICA ORIGINAL CONSERVADA ---
+    # Solo entra aquí si existe un Scan ID Y el Ticket ID NO es 0
+    if [[ -n "$SCAN_ID" && "$TICKET_ID" != 0 ]]; then
+        echo "→ Notifying webhook (hawk scan)"
+        curl -X POST "$WEBHOOK_URL/stackhawk-cloud-sec/$NAME" \
+            -H "Content-Type: application/json" \
+            --data "{ \"scan_id\": \"$SCAN_ID\", \"ticket_id\": \"$TICKET_ID\" }"
     else
-        echo "ERROR: No se pudo obtener el Scan ID. Output del escaneo:"
-        echo "$SCAN_OUTPUT"
+        echo "Skipping webhook: ScanID was empty OR TicketID was 0. (ScanID: $SCAN_ID, TicketID: $TICKET_ID)"
+        # Imprimimos el output si falló para poder depurar
+        if [[ -z "$SCAN_ID" ]]; then
+            echo "--- Hawk Scan Output ---"
+            echo "$SCAN_OUTPUT"
+        fi
     fi
-    
     cd ..
   else
     echo "Project has no url"
