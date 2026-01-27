@@ -457,7 +457,7 @@ jq -c '.[]' snyk.json | while read proj; do
 done
 
 ###############################################
-# Process StackHawk Projects (Unchanged)
+# Process StackHawk Projects
 ###############################################
 cd /app/stackhawk-projects
 
@@ -466,29 +466,71 @@ jq -c '.[]' hawk.json | while read proj; do
   NAME=$(echo "$proj" | jq -r '.name')
   URL=$(echo "$proj" | jq -r '.url')
 
+  echo "------------------------------------------------"
   echo "Processing StackHawk project: $NAME"
 
   if [[ "$URL" != "null" && "$URL" != "" ]]; then
     echo "→ Cloning repo from $URL"
+    # Usamos la misma lógica del branch que discutimos antes, o el default
     git clone "https://$GITHUB_PAT@${URL#https://}"
     cd "$NAME"
     
     echo "→ Running hawk scan"
     set +e
+    # Ejecutamos y guardamos TODA la salida (éxito o error)
     SCAN_OUTPUT=$(hawk scan --no-progress 2>&1)
+    EXIT_CODE=$?
+    
+    # Intentamos extraer el ID
     SCAN_ID=$(echo "$SCAN_OUTPUT" | grep -i "scan id" | awk '{print $NF}')
     set -e
     
-    echo "Scan ID: $SCAN_ID"
-    
-    if [[ -n "$SCAN_ID" && "$TICKET_ID" != 0 ]]; then
-        echo "→ Notifying webhook (hawk scan)"
-        curl -X POST "$WEBHOOK_URL/stackhawk-cloud-sec/$NAME" \
-            -H "Content-Type: application/json" \
-            --data "{ \"scan_id\": \"$SCAN_ID\", \"ticket_id\": \"$TICKET_ID\" }"
+    # -----------------------------------------------------
+    # CASO 1: ÉXITO (Tenemos un Scan ID)
+    # -----------------------------------------------------
+    if [[ -n "$SCAN_ID" ]]; then
+        echo "Scan ID obtained: $SCAN_ID"
+        
+        if [[ "$TICKET_ID" != 0 ]]; then
+            echo "→ Notifying webhook (hawk scan success)"
+            # Nota: Mantenemos tu URL original para éxito
+            curl -X POST "$WEBHOOK_URL/stackhawk-cloud-sec/$NAME" \
+                -H "Content-Type: application/json" \
+                --data "{ \"status\": \"success\", \"scan_id\": \"$SCAN_ID\", \"ticket_id\": \"$TICKET_ID\" }"
+        else
+            echo "Scan finished but TICKET_ID is 0. No webhook sent."
+        fi
+
+    # -----------------------------------------------------
+    # CASO 2: FALLO (No hay Scan ID - Error de configuración o ejecución)
+    # -----------------------------------------------------
     else
-        echo "Skipping webhook: ScanID was empty OR TicketID was 0."
+        echo "❌ ERROR: Hawk scan failed to start or generate an ID."
+        echo "Exit Code: $EXIT_CODE"
+        
+        # Preparamos el JSON de error de forma segura usando jq para evitar problemas con comillas en los logs
+        # Guardamos el log en un archivo temporal para procesarlo
+        echo "$SCAN_OUTPUT" > /tmp/hawk_error_log.txt
+        
+        # Creamos el JSON con jq
+        jq -n \
+          --arg status "failed" \
+          --arg project "$NAME" \
+          --arg ticket "$TICKET_ID" \
+          --rawfile logs /tmp/hawk_error_log.txt \
+          '{status: $status, project: $project, ticket_id: $ticket, error_logs: $logs}' > /tmp/hawk_error_payload.json
+
+        echo "→ Notifying webhook (hawk scan FAILURE)"
+        
+        # Enviamos al webhook. Puedes usar la misma URL o agregarle un sufijo "/error"
+        # Aquí uso "/stackhawk-error/" para que en n8n puedas usar un Switch si quieres
+        curl -X POST "$WEBHOOK_URL/stackhawk-error/$NAME" \
+            -H "Content-Type: application/json" \
+            --data-binary @/tmp/hawk_error_payload.json
+            
+        rm /tmp/hawk_error_log.txt /tmp/hawk_error_payload.json
     fi
+    
     cd ..
   else
     echo "Project has no url"
