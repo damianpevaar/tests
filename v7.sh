@@ -275,3 +275,225 @@ jq -c '.[]' hawk.json | while read proj; do
   fi
   
 done
+
+
+--------------------------------------------------------------------------------------------------------------------
+
+
+#!/bin/bash
+set -e
+
+###############################################
+# Expected environment variables
+#
+# SNYK_PROJECTS     = JSON array of:
+#   [{"name":"api","url":"https://github.com/org/api.git"}]
+#
+# STACKHAWK_PROJECTS = JSON array of:
+#   [{"name":"payments","url":"https://github.com/org/payments-api.git"}]
+#
+# GITHUB_PAT      = github PAT token
+# TICKET_ID       = Jira ticket id
+# SNYK_CLIENT_ID   
+# SNYK_CLIENT_SECRET 
+# STACKHAWK_API_KEY
+# WEBHOOK_URL 
+#
+###############################################
+
+echo "===== Starting Scan Runner ====="
+
+# --- Validation ---
+if [[ -z "$SNYK_CLIENT_ID" ]]; then echo "ERROR: Missing SNYK_CLIENT_ID variable"; exit 1; fi
+if [[ -z "$SNYK_CLIENT_SECRET" ]]; then echo "ERROR: Missing SNYK_CLIENT_SECRET variable"; exit 1; fi
+if [[ -z "$STACKHAWK_API_KEY" ]]; then echo "ERROR: Missing STACKHAWK_API_KEY variable"; exit 1; fi
+if [[ -z "$GITHUB_PAT" ]]; then echo "ERROR: Missing GITHUB_PAT variable"; exit 1; fi
+if [[ -z "$WEBHOOK_URL" ]]; then echo "ERROR: Missing WEBHOOK_URL variable"; exit 1; fi
+
+echo "→ Authenticating Snyk CLI"
+snyk auth --auth-type=oauth --client-id="$SNYK_CLIENT_ID" --client-secret="$SNYK_CLIENT_SECRET"
+
+echo "→ Authenticating StackHawk CLI"
+hawk init --api-key="$STACKHAWK_API_KEY"
+
+TICKET_ID=${TICKET_ID:-0}
+
+###############################################
+# Process Snyk Projects
+###############################################
+cd /app/snyk-projects
+
+echo "$SNYK_PROJECTS" > snyk.json
+
+DOCKER_COUNT=1
+
+jq -c '.[]' snyk.json | while read proj; do
+  NAME=$(echo "$proj" | jq -r '.name')
+  URL=$(echo "$proj" | jq -r '.url')
+
+  echo "------------------------------------------------"
+  echo "Processing Snyk project: $NAME"
+
+  # GitHub repo
+  if [[ "$URL" != "null" && "$URL" != "" ]]; then
+    echo "→ Cloning repo from $URL"
+    git clone "https://$GITHUB_PAT@${URL#https://}"
+    cd "$NAME"
+
+    # ==========================================================
+    # LOGIC CHANGE: Check if URL contains 'iac' (case insensitive)
+    # ==========================================================
+    if [[ "$URL" =~ [iI][aA][cC] ]]; then
+        echo "→ [IaC] Infrastructure as Code repository detected (based on URL)."
+        
+        echo "→ Running snyk iac test"
+        set +e
+        # We scan the current directory (.) for Terraform/K8s files
+        snyk iac test . --json > "/app/snyk-output/snyk-iac-test-$NAME.json"
+        code=$?
+        set -e
+
+        case $code in
+            0) echo "Snyk IaC test completed - no issues found";;
+            1) echo "Snyk IaC test completed - issues found";;
+            *) echo "Snyk IaC test failed with exit code $code";;
+        esac
+
+        # Notify webhook for IaC
+        if [ -s "/app/snyk-output/snyk-iac-test-$NAME.json" ]; then
+            echo "→ Notifying webhook (snyk iac test)"
+            # Note: I added /snyk-iac-scan/ to the URL to differentiate the payload
+            curl -X POST "$WEBHOOK_URL/snyk-iac-scan/$NAME/$TICKET_ID" \
+                -H "Content-Type: application/json" \
+                --data-binary @/app/snyk-output/snyk-iac-test-$NAME.json
+        else
+            echo "Report /app/snyk-output/snyk-iac-test-$NAME.json not found or empty"
+        fi
+
+    else
+        # ==========================================================
+        # STANDARD FLOW (Backend/Frontend)
+        # ==========================================================
+        echo "→ [Standard] Code repository detected."
+        echo "→ Searching for dependencies"
+        
+        if [ -f "package.json" ]; then
+            echo "Node.js project detected"
+            npm install
+        fi
+        
+        if [ -f "requirements.txt" ]; then
+            echo "→ Creating python venv"
+            python3 -m venv .venv
+            source .venv/bin/activate
+            pip install -r requirements.txt
+        fi
+        
+        if [ -f "Cargo.toml" ]; then
+            echo "Rust project detected"
+            rustup update
+        fi
+        
+        # 1. Open Source (SCA) Scan
+        echo "→ Running snyk test (Open Source)"
+        set +e
+        snyk test --all-projects --json > "/app/snyk-output/snyk-test-$NAME.json"
+        code=$?
+        set -e
+        
+        # 2. Code (SAST) Scan
+        echo "→ Running snyk code test (SAST)"
+        set +e
+        snyk code test --json > "/app/snyk-output/snyk-code-test-$NAME.json"
+        code=$?
+        set -e
+        
+        # Cleanup
+        if command -v deactivate >/dev/null 2>&1; then
+            echo "→ Deactivating python venv"
+            deactivate
+        fi
+        
+        # Notify Webhook (SCA)
+        if [ -s "/app/snyk-output/snyk-test-$NAME.json" ]; then
+            echo "→ Notifying webhook (snyk test)"
+            curl -X POST "$WEBHOOK_URL/snyk-scan/$NAME/$TICKET_ID" \
+                -H "Content-Type: application/json" \
+                --data-binary @/app/snyk-output/snyk-test-$NAME.json
+        fi
+        
+        # Notify Webhook (SAST)
+        if [ -s "/app/snyk-output/snyk-code-test-$NAME.json" ]; then
+            echo "→ Notifying webhook (snyk code test)"
+            curl -X POST "$WEBHOOK_URL/snyk-code-scan/$NAME/$TICKET_ID" \
+                -H "Content-Type: application/json" \
+                --data-binary @/app/snyk-output/snyk-code-test-$NAME.json
+        fi
+    fi 
+    # ==========================================================
+    # END LOGIC CHANGE
+    # ==========================================================
+
+    cd ..
+  else
+    # Docker project (No changes here)
+    echo "→ Docker image scan: $NAME"
+    set +e
+    ECR_PASSWORD=$(aws ecr get-login-password --region us-east-1)
+    snyk container test "${NAME#docker.io/}" --username=AWS --password="$ECR_PASSWORD" --json > "/app/docker-scan-$DOCKER_COUNT-temp.json"
+    code=$?
+    set -e
+    
+    jq --arg image "$NAME" '. + { scannedImage: $image }' "/app/docker-scan-$DOCKER_COUNT-temp.json" > "/app/docker-scan-$DOCKER_COUNT.json"
+    
+    if [ -s "/app/docker-scan-$DOCKER_COUNT.json" ]; then
+        echo "→ Notifying webhook (snyk container test)"
+        curl -X POST "$WEBHOOK_URL/snyk-container-scan/$TICKET_ID" \
+            -H "Content-Type: application/json" \
+            --data-binary @/app/docker-scan-$DOCKER_COUNT.json
+    fi
+    DOCKER_COUNT=$((DOCKER_COUNT+1))
+  fi
+done
+
+###############################################
+# Process StackHawk Projects (Unchanged)
+###############################################
+cd /app/stackhawk-projects
+
+echo "$STACKHAWK_PROJECTS" > hawk.json
+jq -c '.[]' hawk.json | while read proj; do
+  NAME=$(echo "$proj" | jq -r '.name')
+  URL=$(echo "$proj" | jq -r '.url')
+
+  echo "Processing StackHawk project: $NAME"
+
+  if [[ "$URL" != "null" && "$URL" != "" ]]; then
+    echo "→ Cloning repo from $URL"
+    git clone "https://$GITHUB_PAT@${URL#https://}"
+    cd "$NAME"
+    
+    echo "→ Running hawk scan"
+    set +e
+    SCAN_OUTPUT=$(hawk scan --no-progress 2>&1)
+    SCAN_ID=$(echo "$SCAN_OUTPUT" | grep -i "scan id" | awk '{print $NF}')
+    set -e
+    
+    echo "Scan ID: $SCAN_ID"
+    
+    if [[ -n "$SCAN_ID" && "$TICKET_ID" != 0 ]]; then
+        echo "→ Notifying webhook (hawk scan)"
+        curl -X POST "$WEBHOOK_URL/stackhawk-cloud-sec/$NAME" \
+            -H "Content-Type: application/json" \
+            --data "{ \"scan_id\": \"$SCAN_ID\", \"ticket_id\": \"$TICKET_ID\" }"
+    else
+        echo "Skipping webhook: ScanID was empty OR TicketID was 0."
+    fi
+    cd ..
+  else
+    echo "Project has no url"
+  fi
+  
+done
+
+echo "===== Scan Runner Completed ====="
