@@ -83,6 +83,7 @@ jq -c '.[]' snyk.json | while read proj; do
         # Notify webhook for IaC
         if [ -s "/app/snyk-output/snyk-iac-test-$NAME.json" ]; then
             echo "→ Notifying webhook (snyk iac test)"
+            # Nota: Mismo endpoint snyk-scan para simplificar, tu backend debe diferenciar por contenido
             curl -X POST "$WEBHOOK_URL/snyk-scan/$NAME/$TICKET_ID" \
                 -H "Content-Type: application/json" \
                 --data-binary @/app/snyk-output/snyk-iac-test-$NAME.json
@@ -146,28 +147,71 @@ jq -c '.[]' snyk.json | while read proj; do
 
     cd ..
   else
-    # Docker project (No changes here)
+    # ==========================================================
+    # DOCKER IMAGE SCAN
+    # ==========================================================
     echo "→ Docker image scan: $NAME"
+    
+    # 1. Login a ECR
     set +e
     ECR_PASSWORD=$(aws ecr get-login-password --region us-east-1)
-    snyk container test "${NAME#docker.io/}" --username=AWS --password="$ECR_PASSWORD" --json > "/app/docker-scan-$DOCKER_COUNT-temp.json"
+    
+    # 2. Ejecutar Snyk Container
+    # IMPORTANTE: Guardamos stderr (2>) en un log aparte para capturar errores de autenticación o "image not found"
+    snyk container test "${NAME#docker.io/}" --username=AWS --password="$ECR_PASSWORD" --json \
+        > "/app/docker-scan-$DOCKER_COUNT-temp.json" \
+        2> "/app/docker-scan-$DOCKER_COUNT-error.log"
+        
     code=$?
     set -e
     
-    jq --arg image "$NAME" '. + { scannedImage: $image }' "/app/docker-scan-$DOCKER_COUNT-temp.json" > "/app/docker-scan-$DOCKER_COUNT.json"
-    
-    if [ -s "/app/docker-scan-$DOCKER_COUNT.json" ]; then
-        echo "→ Notifying webhook (snyk container test)"
+    # 3. Verificar si se generó un reporte válido (JSON con contenido)
+    if [ -s "/app/docker-scan-$DOCKER_COUNT-temp.json" ]; then
+        # --- CASO ÉXITO (O Vulnerabilidades encontradas) ---
+        
+        # Inyectamos el nombre de la imagen al JSON
+        jq --arg image "$NAME" '. + { scannedImage: $image }' "/app/docker-scan-$DOCKER_COUNT-temp.json" > "/app/docker-scan-$DOCKER_COUNT.json"
+        
+        echo "→ Notifying webhook (snyk container test SUCCESS)"
         curl -X POST "$WEBHOOK_URL/snyk-container-scan/$TICKET_ID" \
             -H "Content-Type: application/json" \
             --data-binary @/app/docker-scan-$DOCKER_COUNT.json
+            
+    else
+        # --- CASO ERROR (Fallo de ejecución) ---
+        echo "❌ ERROR: Snyk container scan failed (No JSON report generated)."
+        echo "Exit Code: $code"
+        
+        # Preparamos el payload de error
+        # Nota: En Docker no tenemos "git_branch" porque no estamos en un repo clonado
+        # CORRECCIÓN: Usamos status="failed" para que n8n lo filtre
+        jq -n \
+          --arg status "failed" \
+          --arg project "$NAME" \
+          --arg ticket "$TICKET_ID" \
+          --arg exit_code "$code" \
+          --rawfile logs "/app/docker-scan-$DOCKER_COUNT-error.log" \
+          '{status: $status, project: $project, ticket_id: $ticket, exit_code: $exit_code, error_logs: $logs}' > /tmp/snyk_docker_error_payload.json
+
+        echo "→ Notifying webhook (snyk container FAILURE)"
+        
+        # CORRECCIÓN: Enviamos a la MISMA URL que el éxito para no crear otro webhook
+        curl -X POST "$WEBHOOK_URL/snyk-container-scan/$TICKET_ID" \
+            -H "Content-Type: application/json" \
+            --data-binary @/tmp/snyk_docker_error_payload.json
+            
+        rm /tmp/snyk_docker_error_payload.json
     fi
+    
+    # Limpieza de logs temporales
+    rm -f "/app/docker-scan-$DOCKER_COUNT-error.log" "/app/docker-scan-$DOCKER_COUNT-temp.json"
+    
     DOCKER_COUNT=$((DOCKER_COUNT+1))
   fi
 done
 
 ###############################################
-# Process StackHawk Projects (Lógica que agregamos antes)
+# Process StackHawk Projects
 ###############################################
 cd /app/stackhawk-projects
 
@@ -219,6 +263,7 @@ jq -c '.[]' hawk.json | while read proj; do
           '{status: $status, project: $project, ticket_id: $ticket, git_branch: $branch, error_logs: $logs}' > /tmp/hawk_error_payload.json
 
         echo "→ Notifying webhook (hawk scan FAILURE)"
+        # MISMA URL que el éxito
         curl -X POST "$WEBHOOK_URL/stackhawk-cloud-sec/$NAME" \
             -H "Content-Type: application/json" \
             --data-binary @/tmp/hawk_error_payload.json
