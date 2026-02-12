@@ -1,9 +1,8 @@
 FROM debian:bookworm-slim
 
-# Evitar prompts interactivos
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Instalamos dependencias básicas, nmap y ZAP (vía paquetes o scripts)
+# Herramientas base
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -14,23 +13,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     openjdk-17-jre \
     unzip \
-    && rm -rf /var/lib/apt/lists/*
+    openssl \
+ && rm -rf /var/lib/apt/lists/*
 
-# Instalación de OWASP ZAP (Versión Bare para CLI)
-RUN curl -s https://github.com/zaproxy/zaproxy/releases/download/v2.14.0/ZAP_2.14.0_Linux.tar.gz -L -o zap.tar.gz \
-    && tar -xzvf zap.tar.gz && rm zap.tar.gz \
-    && mv ZAP_2.14.0 /opt/zaproxy \
-    && ln -s /opt/zaproxy/zap.sh /usr/local/bin/zap
+# OWASP ZAP
+RUN curl -fL https://github.com/zaproxy/zap-archive/releases/download/zap-v2.14.0/ZAP_2.14.0_Linux.tar.gz -o zap.tar.gz \
+ && tar -xzf zap.tar.gz \
+ && rm zap.tar.gz \
+ && mv ZAP_2.14.0 /opt/zaproxy \
+ && ln -s /opt/zaproxy/zap.sh /usr/local/bin/zap
 
-# Instalación de testssl.sh
-RUN git clone --depth 1 https://github.com/drwetter/testssl.sh.sh.git /opt/testssl \
-    && ln -s /opt/testssl/testssl.sh /usr/local/bin/testssl
+# TestSSL.sh
+RUN git clone --depth 1 https://github.com/drwetter/testssl.sh.git /opt/testssl \
+ && ln -s /opt/testssl/testssl.sh /usr/local/bin/testssl.sh \
+ && chmod +x /usr/local/bin/testssl.sh
 
 WORKDIR /app
-ENV TARGET_URL=""
-ENV N8N_WEBHOOK_URL=""
+
 COPY scanner.sh .
+
 RUN chmod +x scanner.sh
 
-# El script recibirá la URL como argumento
 ENTRYPOINT ["./scanner.sh"]
