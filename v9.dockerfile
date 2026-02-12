@@ -1,14 +1,24 @@
-FROM greenbone/community-edition:latest
+# Usamos esta imagen que sí es pública y contiene todo el stack (GVM 22.4+)
+FROM immauss/openvas:latest
 
-# Instalamos curl y jq para poder hablar con el webhook de n8n
 USER root
-RUN apt-get update && apt-get install -y curl jq python3-pip && rm -rf /var/lib/apt/lists/*
+
+# Instalamos curl, jq y gvm-tools para la comunicación con n8n
+RUN apt-get update && apt-get install -y \
+    curl \
+    jq \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Instalamos gvm-tools
 RUN pip3 install gvm-tools --break-system-packages
 
 WORKDIR /app
-COPY openvas_real_scan.sh .
-RUN chmod +x openvas_real_scan.sh
 
-# Esta imagen ya tiene su propio ENTRYPOINT, 
-# así que usaremos el script para orquestar el escaneo tras el arranque.
+# Copiamos tu script de orquestación
+COPY openvas_test.sh .
+RUN chmod +x openvas_test.sh
+
+# Esta imagen usa un entrypoint que levanta servicios, 
+# pero nosotros sobreescribimos para controlar el flujo.
 ENTRYPOINT ["./openvas_test.sh"]
