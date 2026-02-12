@@ -1,7 +1,8 @@
 sudo docker build -t openvas-runner:latest .
 
-sudo docker run \
-  -e TICKET_ID="RSR-123" \
-  -e TARGET_IP="1.1.1.1" \
-  -e WEBHOOK_URL="https://mgonzalezg.app.n8n.cloud/webhook/1cbd69f4-e7f2-4002-9738-8f74e551258a" \
+sudo docker run
+  --name openvas_test
+  -e TARGET_IP="framer.com"
+  -e WEBHOOK_URL="https://tu-n8n.cloud/webhook/..."
+  --shm-size=2g
   openvas-runner:latest
