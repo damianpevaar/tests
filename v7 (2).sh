@@ -21,7 +21,7 @@ NMAP_OUT=$(nmap -F "$DOMAIN" | tr '\n' '\\n')
 
 # 3. TestSSL (robusto)
 echo "→ Corriendo TestSSL..."
-testssl.sh --sneaky --quiet --jsonfile-pretty /tmp/ssl_res.json "$DOMAIN" || true
+testssl.sh --jsonfile /tmp/ssl_res.json "$DOMAIN" || true
 
 if [ -f /tmp/ssl_res.json ]; then
   SSL_DATA=$(cat /tmp/ssl_res.json)
