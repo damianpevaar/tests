@@ -1,63 +1,56 @@
 #!/bin/bash
 set -e
 
-echo "===== INICIANDO PROCESO DE ESCANEO ====="
+echo "===== INICIANDO PROCESO DE ESCANEO AVANZADO ====="
 
 # Validación básica
-if [ -z "$TARGET_URL" ]; then
-  echo "ERROR: TARGET_URL no definido"
+if [ -z "$TARGET_URL" ] || [ -z "$N8N_WEBHOOK_URL" ]; then
+  echo "ERROR: TARGET_URL o N8N_WEBHOOK_URL no definidos"
   exit 1
 fi
 
 # 1. Limpieza de URL → dominio
 DOMAIN=$(echo "$TARGET_URL" | sed -e 's|^[^/]*//||' -e 's|/.*$||')
 
-echo "→ Objetivo completo: $TARGET_URL"
-echo "→ Dominio extraído: $DOMAIN"
+echo "→ Objetivo: $TARGET_URL"
+echo "→ Dominio: $DOMAIN"
 
-# 2. Nmap
-echo "→ Corriendo Nmap..."
-NMAP_OUT=$(nmap -F "$DOMAIN" | tr '\n' '\\n')
+# 2. Nmap (Escaneo profundo y vulnerabilidades)
+echo "→ Corriendo Nmap Intrusivo..."
+# -sS: SYN Scan, -sV: Versiones, -O: OS, -Pn: No ping, --script: Vuln
+nmap -sS -T3 -Pn -sV -O --script=default,vuln --open "$DOMAIN" > /tmp/nmap_res.txt
+NMAP_OUT=$(cat /tmp/nmap_res.txt)
 
-# 3. TestSSL (robusto)
+# 3. TestSSL
 echo "→ Corriendo TestSSL..."
 testssl.sh --jsonfile /tmp/ssl_res.json "$DOMAIN" || true
-
 if [ -f /tmp/ssl_res.json ]; then
   SSL_DATA=$(cat /tmp/ssl_res.json)
 else
   SSL_DATA='{"error":"No se pudo generar reporte SSL"}'
 fi
 
-# 4. OWASP ZAP
-echo "→ Corriendo OWASP ZAP..."
-zap -cmd -quickurl "$TARGET_URL" -quickout /tmp/zap_report.xml || true
+# 4. OWASP ZAP (Reporte JSON completo)
+echo "→ Corriendo OWASP ZAP (Escaneo Rápido)..."
+# Generamos el reporte directamente en JSON para no perder nada de información
+zap.sh -cmd -quickurl "$TARGET_URL" -quickout /tmp/zap_report.json -format json || true
 
-# Parsear XML de ZAP a JSON completo
-ZAP_FINDINGS=$(awk '
-/<alertitem>/ {inblock=1; name=""; risk=""; desc=""; solution=""; url="";}
-/<\/alertitem>/ {
-  printf "{\"name\":\"%s\",\"risk\":\"%s\",\"description\":\"%s\",\"solution\":\"%s\",\"url\":\"%s\"},", name, risk, desc, solution, url;
-  inblock=0;
-}
-inblock && /<alert>/ {gsub(/.*<alert>|<\/alert>.*/,""); name=$0}
-inblock && /<riskdesc>/ {gsub(/.*<riskdesc>|<\/riskdesc>.*/,""); risk=$0}
-inblock && /<desc>/ {gsub(/.*<desc>|<\/desc>.*/,""); desc=$0}
-inblock && /<solution>/ {gsub(/.*<solution>|<\/solution>.*/,""); solution=$0}
-inblock && /<uri>/ {gsub(/.*<uri>|<\/uri>.*/,""); url=$0}
-' /tmp/zap_report.xml | sed 's/,$//')
+if [ -f /tmp/zap_report.json ]; then
+  # Leemos el JSON completo para meterlo en el payload
+  ZAP_DATA=$(cat /tmp/zap_report.json)
+else
+  ZAP_DATA='{"error":"ZAP no generó reporte JSON"}'
+fi
 
-ZAP_FINDINGS="[$ZAP_FINDINGS]"
-
-# 5. Enviar a n8n
-echo "→ Enviando resultados a n8n..."
+# 5. Enviar a n8n (Payload masivo)
+echo "→ Enviando resultados completos a n8n..."
 
 PAYLOAD=$(jq -n \
   --arg target "$TARGET_URL" \
   --arg domain "$DOMAIN" \
   --arg nmap "$NMAP_OUT" \
   --argjson ssl "$SSL_DATA" \
-  --argjson zap "$ZAP_FINDINGS" \
+  --argjson zap "$ZAP_DATA" \
   '{
     info: {
       url: $target,
@@ -67,7 +60,7 @@ PAYLOAD=$(jq -n \
     results: {
       nmap_raw: $nmap,
       testssl_results: $ssl,
-      zap_findings: $zap
+      zap_full_report: $zap
     }
   }')
 
