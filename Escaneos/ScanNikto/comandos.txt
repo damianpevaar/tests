@@ -1,0 +1,5 @@
+crear imagen nikton
+docker build -f nikton.dockerfile -t scanner-nikton .
+correr imagen de nikton
+docker run --rm  -e TARGET_URL=https://framer.com  -e N8N_WEBHOOK_URL=https://mgonzalezg.app.n8n.cloud/webhook/niktoscan scanner-nikton
+

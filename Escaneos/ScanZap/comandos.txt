@@ -1,0 +1,5 @@
+
+crear imagen ZAP
+docker build -f zap.dockerfile -t scanner-zap .
+correr imagen de ZAP
+docker run --rm  -e TARGET_URL=https://framer.com  -e N8N_WEBHOOK_URL=https://mgonzalezg.app.n8n.cloud/webhook/zapscan scanner-zap

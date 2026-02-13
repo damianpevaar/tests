@@ -1,0 +1,4 @@
+crear imagen testssl.sh
+docker build -f testssl.dockerfile -t scanner-testssl .
+correr imagen de nikton 
+docker run --rm  -e TARGET_URL=https://framer.com  -e N8N_WEBHOOK_URL=https://mgonzalezg.app.n8n.cloud/webhook/testsslscan scanner-testssl
