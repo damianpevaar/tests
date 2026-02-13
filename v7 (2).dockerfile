@@ -1,71 +1,49 @@
-#!/bin/bash
-set -e
+FROM debian:bookworm-slim
 
-echo "===== INICIANDO PROCESO DE ESCANEO AVANZADO ====="
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Validación básica
-if [ -z "$TARGET_URL" ] || [ -z "$N8N_WEBHOOK_URL" ]; then
-  echo "ERROR: TARGET_URL o N8N_WEBHOOK_URL no definidos"
-  exit 1
-fi
+# Herramientas base + nikto + nmap
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    util-linux \
+    bsdmainutils \
+    procps \
+    openssl \
+    jq \
+    dnsutils \
+    nmap \
+    perl \
+    libjson-perl \
+    libxml-writer-perl \
+    python3 \
+    python3-pip \
+    openjdk-17-jre \
+    unzip \
+ && rm -rf /var/lib/apt/lists/*
 
-# 1. Limpieza de URL → dominio
-DOMAIN=$(echo "$TARGET_URL" | sed -e 's|^[^/]*//||' -e 's|/.*$||')
+# OWASP ZAP
+RUN curl -fL https://github.com/zaproxy/zap-archive/releases/download/zap-v2.14.0/ZAP_2.14.0_Linux.tar.gz -o zap.tar.gz \
+ && tar -xzf zap.tar.gz \
+ && rm zap.tar.gz \
+ && mv ZAP_2.14.0 /opt/zaproxy \
+ && ln -s /opt/zaproxy/zap.sh /usr/local/bin/zap
 
-echo "→ Objetivo: $TARGET_URL"
-echo "→ Dominio: $DOMAIN"
+# TestSSL.sh
+RUN git clone --depth 1 https://github.com/drwetter/testssl.sh.git /opt/testssl \
+ && ln -s /opt/testssl/testssl.sh /usr/local/bin/testssl.sh \
+ && chmod +x /usr/local/bin/testssl.sh
 
-# 2. Nmap (Escaneo profundo y vulnerabilidades)
-echo "→ Corriendo Nmap Intrusivo..."
-# -sS: SYN Scan, -sV: Versiones, -O: OS, -Pn: No ping, --script: Vuln
-nmap -sS -T3 -Pn -sV -O --script=default,vuln --open "$DOMAIN" > /tmp/nmap_res.txt
-NMAP_OUT=$(cat /tmp/nmap_res.txt)
+# Instalar Nikto manualmente
+RUN git clone https://github.com/sullo/nikto.git /opt/nikto \
+ && ln -s /opt/nikto/program/nikto.pl /usr/local/bin/nikto \
+ && chmod +x /usr/local/bin/nikto
 
-# 3. TestSSL
-echo "→ Corriendo TestSSL..."
-testssl.sh --jsonfile /tmp/ssl_res.json "$DOMAIN" || true
-if [ -f /tmp/ssl_res.json ]; then
-  SSL_DATA=$(cat /tmp/ssl_res.json)
-else
-  SSL_DATA='{"error":"No se pudo generar reporte SSL"}'
-fi
+WORKDIR /app
 
-# 4. OWASP ZAP (Reporte JSON completo)
-echo "→ Corriendo OWASP ZAP (Escaneo Rápido)..."
-# Generamos el reporte directamente en JSON para no perder nada de información
-zap.sh -cmd -quickurl "$TARGET_URL" -quickout /tmp/zap_report.json -format json || true
+COPY scanner.sh .
 
-if [ -f /tmp/zap_report.json ]; then
-  # Leemos el JSON completo para meterlo en el payload
-  ZAP_DATA=$(cat /tmp/zap_report.json)
-else
-  ZAP_DATA='{"error":"ZAP no generó reporte JSON"}'
-fi
+RUN sed -i 's/\r$//' *.sh && chmod +x scanner.sh
 
-# 5. Enviar a n8n (Payload masivo)
-echo "→ Enviando resultados completos a n8n..."
-
-PAYLOAD=$(jq -n \
-  --arg target "$TARGET_URL" \
-  --arg domain "$DOMAIN" \
-  --arg nmap "$NMAP_OUT" \
-  --argjson ssl "$SSL_DATA" \
-  --argjson zap "$ZAP_DATA" \
-  '{
-    info: {
-      url: $target,
-      host: $domain,
-      scan_date: (now | strftime("%Y-%m-%d %H:%M:%S"))
-    },
-    results: {
-      nmap_raw: $nmap,
-      testssl_results: $ssl,
-      zap_full_report: $zap
-    }
-  }')
-
-curl -X POST "$N8N_WEBHOOK_URL" \
-  -H "Content-Type: application/json" \
-  -d "$PAYLOAD"
-
-echo "===== ESCANEO FINALIZADO EXITOSAMENTE ====="
+ENTRYPOINT ["./scanner.sh"]
