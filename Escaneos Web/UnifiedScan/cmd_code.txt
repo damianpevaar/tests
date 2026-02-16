@@ -1,7 +1,7 @@
 Crear imagen Web Scanner
 
-docker build -f web_scan.dockerfile -t web-scan .
+	docker build -f web_scan.dockerfile -t web-scan .
 
 Correr Imagen
 
-docker run --rm -e TARGET_URL=www.google.com web-scan:latest
+	docker run --rm -e TARGET_URL=www.google.com web-scan:latest
