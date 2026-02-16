@@ -220,7 +220,7 @@ jq -c '.[]' hawk.json | while read proj; do
             echo "Scan finished but TICKET_ID is 0. No webhook sent."
         fi
     else
-        echo "❌ ERROR: Hawk scan failed to start or generate an ID."
+        echo "ERROR: Hawk scan failed to start or generate an ID."
         echo "Exit Code: $EXIT_CODE"
         
         echo "$SCAN_OUTPUT" > /tmp/hawk_error_log.txt
