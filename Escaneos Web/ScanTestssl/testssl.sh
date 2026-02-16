@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "===== INICIANDO ESCANEO SSL (MODO ROBUSTO) ====="
+echo "===== INICIANDO ESCANEO SSL (MODO COMPLETO/SIN FILTROS) ====="
 
 # 1. Validación
 if [ -z "$TARGET_URL" ]; then
@@ -13,80 +13,70 @@ DOMAIN=$(echo "$TARGET_URL" | sed -e 's|^[^/]*//||' -e 's|/.*$||')
 echo "→ Objetivo: $DOMAIN"
 
 # 2. Ejecución de TestSSL
-# Usamos --overwrite para asegurar que no se queje si el archivo ya existe
-echo "→ Corriendo análisis..."
+# Mantenemos --ip one para que no se duplique la info por cada IP del balanceador,
+# pero ahora reportaremos QUÉ IP fue la elegida.
+echo "→ Corriendo análisis exhaustivo..."
 testssl.sh --quiet --overwrite --ip one --jsonfile /tmp/ssl.json "$DOMAIN" || true
 
-# 3. Debugging del Archivo (Para ver si realmente se creó)
-if [ -s /tmp/ssl.json ]; then
-  FILE_SIZE=$(ls -lh /tmp/ssl.json | awk '{print $5}')
-  echo "→ Archivo JSON generado correctamente. Tamaño: $FILE_SIZE"
-else
-  echo "ERROR CRÍTICO: El archivo /tmp/ssl.json está vacío o no existe."
-  # Creamos un JSON dummy para no romper el flujo
+# 3. Verificación
+if [ ! -s /tmp/ssl.json ]; then
+  echo "ERROR: El archivo JSON está vacío."
   echo '[]' > /tmp/ssl.json
 fi
 
-# 4. Procesamiento con JQ (MÉTODO SEGURO: STREAMING)
-# En lugar de cargar el archivo en una variable, se lo pasamos directo a jq con 'cat'
-echo "→ Procesando datos con jq..."
+# ... (todo lo anterior sigue igual) ...
 
-PAYLOAD=$(cat /tmp/ssl.json | jq -n \
+# 4. Procesamiento JQ (CON AUTO-CATEGORIZACIÓN)
+echo "→ Empaquetando y categorizando data..."
+
+PAYLOAD=$(jq -s \
   --arg target "$TARGET_URL" \
   --arg domain "$DOMAIN" \
-  --arg date "$(date '+%Y-%m-%d %H:%M:%S')" \
   '
-    # "inputs" lee el stream que le pasamos por el pipe
-    [inputs] as $raw | 
-    # Como testssl a veces devuelve un array o varios objetos, lo aplanamos
-    ($raw | flatten) as $data |
-    
+    flatten as $data |
     {
-      info: {
-        url: $target,
-        scan_date: $date
+      meta: {
+        target_domain: $domain,
+        scanned_ip: ($data | map(select(.id == "scanTime")) | first | .ip // "Unknown"),
+        scan_time: ($data | map(select(.id == "scanTime")) | first | .finding // "Unknown")
       },
-      results: {
-        grade: ($data[] | select(.id == "overall_grade") | .finding // "Unknown"),
-        
-        certificate: {
-          expiration: ($data[] | select(.id == "cert_expiration") | .finding // "Unknown"),
-          issuer: ($data[] | select(.id == "cert_issuer") | .finding // "Unknown")
-        },
 
-        # Filtramos para ver protocolos
-        protocols: $data | map(select(.id | test("TLS1_2|TLS1_3|SSLv3"))) | map({
-           protocol: .id,
-           status: .finding
-        }),
+      summary: {
+         grade: ($data | map(select(.id == "overall_grade")) | first | .finding // "Unknown")
+      },
 
-        # Filtramos vulnerabilidades críticas (Heartbleed, etc)
-        security_checks: $data | map(select(.id | test("HEARTBLEED|POODLE|ROBOT"))) | map({
-           test: .id,
-           status: .finding
-        }),
-
-        # Cualquier advertencia real
-        warnings: $data | map(select(.severity != "OK" and .severity != "INFO" and .severity != "LOW")) | map({
-           id: .id,
-           finding: .finding,
-           severity: .severity
-        })
-      }
+      full_scan_results: $data 
+        | map(select(.id != null and .id != "scanTime" and .id != "version" and .id != "overall_grade"))
+        | map({
+            # AQUÍ ESTÁ LA MAGIA: Lógica condicional para llenar los nulos
+            category: (
+              if .section != null then .section
+              elif (.id | test("^cert_")) then "Certificate"
+              elif (.id | test("^SSL|^TLS|^DTLS")) then "Protocols"
+              elif (.id | test("cipher|ChaCha|AES|GCM")) then "Ciphers"
+              elif (.id | test("HBLEED|POODLE|ROBOT|BREACH|CCS|FREAK|LOGJAM|BEAST|RC4")) then "Vulnerabilities"
+              elif (.id | test("HSTS|HPKP|header")) then "Headers"
+              elif (.id | test("clientsimulation")) then "Client Simulation"
+              else "General Info" end
+            ),
+            
+            check_id: .id,
+            result: .finding,
+            severity: .severity
+          })
     }
-  ')
+  ' /tmp/ssl.json)
 
-# 5. Verificación final antes de enviar
+
+# 5. Envío
 if [ -z "$PAYLOAD" ]; then
-  echo "ERROR: El PAYLOAD quedó vacío después de jq. Revisa la instalación de jq."
+  echo "❌ ERROR: Payload vacío."
   exit 1
 fi
 
 echo "→ Enviando a n8n..."
-# Debug: Descomenta esto si quieres ver el JSON antes de enviarlo
-# echo "$PAYLOAD" 
-
-curl -v -X POST "$N8N_WEBHOOK_URL" \
+# curl -v ... (puedes activar -v si quieres depurar)
+curl -s -X POST "$N8N_WEBHOOK_URL" \
   -H "Content-Type: application/json" \
   -d "$PAYLOAD"
 
