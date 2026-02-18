@@ -6,7 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl git jq ca-certificates procps net-tools bsdmainutils dnsutils util-linux \
     nmap openssl openjdk-17-jre unzip perl \
-    libjson-perl libjson-pp-perl libnet-ssleay-perl libio-socket-ssl-perl \
+    libjson-perl libjson-pp-perl libnet-ssleay-perl libio-socket-ssl-perl libxml-writer-perl \
  && rm -rf /var/lib/apt/lists/*
 
 # Instalación de Nikto

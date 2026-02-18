@@ -68,17 +68,11 @@ PAYLOAD=$(jq -s \
   ' /tmp/ssl.json)
 
 
-# 5. Envío
+# 5. Envío via tmp
 if [ -z "$PAYLOAD" ]; then
-  echo "❌ ERROR: Payload vacío."
+  echo "ERROR: Payload vacío."
   exit 1
 fi
 
-echo "→ Enviando a n8n..."
-# curl -v ... (puedes activar -v si quieres depurar)
-curl -s -X POST "$N8N_WEBHOOK_URL" \
-  -H "Content-Type: application/json" \
-  -d "$PAYLOAD"
-
-echo ""
+echo "$PAYLOAD" > /tmp/testssl_res.json
 echo "===== FINALIZADO ====="

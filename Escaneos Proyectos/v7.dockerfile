@@ -1,3 +1,4 @@
+
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -48,6 +49,6 @@ RUN mkdir -p \
 # Entrypoint
 # ================================
 COPY v7.sh .
-RUN chmod +x v7.sh
+RUN sed -i 's/\r$//' *.sh && chmod +x v7.sh
 
 ENTRYPOINT ["./v7.sh"]

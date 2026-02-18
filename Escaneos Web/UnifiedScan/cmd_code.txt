@@ -4,4 +4,4 @@ Crear imagen Web Scanner
 
 Correr Imagen
 
-	docker run --rm -e TARGET_URL=www.google.com web-scan:latest
+	docker run --rm -e TARGET_URL=htpps://google.com web-scan:latest

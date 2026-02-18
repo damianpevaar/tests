@@ -20,7 +20,7 @@ echo "→ Dominio extraído: $DOMAIN"
 echo "→ Corriendo Nikto..."
 NIKTO_OUT=$(nikto -h "$DOMAIN" -nointeractive -nossl 2>&1 | tr '\n' '\\n')
 
-# Envío a n8n
+# Envío a n8n via tmp
 echo "→ Enviando resultados a n8n..."
 
 PAYLOAD=$(jq -n \
@@ -38,8 +38,5 @@ PAYLOAD=$(jq -n \
     }
   }')
 
-curl -X POST "$N8N_WEBHOOK_URL" \
-  -H "Content-Type: application/json" \
-  -d "$PAYLOAD"
-
+echo "$PAYLOAD" > /tmp/nikto_res.json
 echo "===== ESCANEO FINALIZADO EXITOSAMENTE ====="
