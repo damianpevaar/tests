@@ -16,8 +16,10 @@ if [[ -z "$SNYK_CLIENT_SECRET" ]]; then echo "ERROR: Missing SNYK_CLIENT_SECRET 
 if [[ -z "$STACKHAWK_API_KEY" ]]; then echo "ERROR: Missing STACKHAWK_API_KEY variable"; exit 1; fi
 if [[ -z "$GITHUB_PAT" ]]; then echo "ERROR: Missing GITHUB_PAT variable"; exit 1; fi
 if [[ -z "$WEBHOOK_URL" ]]; then echo "ERROR: Missing WEBHOOK_URL variable"; exit 1; fi
-if [[ -z "$USER_EMAIL" ]]; then echo "ERROR: Missing USER_EMAIL variable"; exit 1; fi
-if [[ -z "$TIMESTAMP" ]]; then echo "ERROR: Missing TIMESTAMP variable"; exit 1; fi
+#if [[ -z "$USER_EMAIL" ]]; then echo "ERROR: Missing USER_EMAIL variable"; exit 1; fi
+#if [[ -z "$TIMESTAMP" ]]; then echo "ERROR: Missing TIMESTAMP variable"; exit 1; fi
+TIMESTAMP=${TIMESTAMP:-"N/A"}
+USER_EMAIL=${USER_EMAIL:-"N/A"}
 
 echo "→ Authenticating Snyk CLI"
 snyk auth --auth-type=oauth --client-id="$SNYK_CLIENT_ID" --client-secret="$SNYK_CLIENT_SECRET"
