@@ -18,6 +18,10 @@ if [[ -z "$GITHUB_PAT" ]]; then echo "ERROR: Missing GITHUB_PAT"; exit 1; fi
 if [[ -z "$WEBHOOK_URL" ]]; then echo "ERROR: Missing WEBHOOK_URL"; exit 1; fi
 
 # --- Validaciones OPCIONALES con Valor por Defecto ---
+# Si la variable viene vacía o no existe en el comando 'docker run', se le asigna "0"
+TIMESTAMP="${TIMESTAMP:-0}"
+USER_EMAIL="${USER_EMAIL:-0}"
+TICKET_ID="${TICKET_ID:-0}"
 
 echo "→ Config: Email [$USER_EMAIL] | Timestamp [$TIMESTAMP] | Ticket [$TICKET_ID]"
 
