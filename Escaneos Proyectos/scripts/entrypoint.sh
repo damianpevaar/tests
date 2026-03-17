@@ -86,29 +86,66 @@
 
                 curl -X POST "$WEBHOOK_URL/snyk-scan/$NAME/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/snyk-output/snyk-iac-test-$NAME.json
 
+        else
+            # --- Escaneo Estándar (SCA) ---
+            echo "→ [Standard] Code repository detected."
+            
+            # 1. Detección de motor de dependencias
+            if [ -f "uv.lock" ]; then
+                echo "→ [SCA] uv.lock detected. Using native high-precision scan with 'uv run'."
+                SNYK_EXTRA_FLAGS="--file=uv.lock"
+                echo "→ Running Snyk SCA via 'uv run' (Zero-Install mode)..."
+                set +e
+                uv run snyk test $SNYK_EXTRA_FLAGS --json > "/app/snyk-output/snyk-test-temp-$NAME.json"
+                code=$?
+                set -e
+                echo "→ Snyk SCA finished with exit code $code."
+
+            elif [ -f "requirements.txt" ]; then
+                echo "→ [SCA] requirements.txt detected. Running standard pip scan..."
+                SNYK_EXTRA_FLAGS="--file=requirements.txt --package-manager=pip --command=python3 --skip-unresolved"
+                set +e
+                snyk test $SNYK_EXTRA_FLAGS --json > "/app/snyk-output/snyk-test-temp-$NAME.json"
+                code=$?
+                set -e
+                echo "→ Snyk SCA finished with exit code $code."
             else
-                # --- Escaneo Estándar (SCA) ---
-                echo "→ [Standard] Code repository detected."
-                [[ -f "package.json" ]] && (npm install --package-lock-only || npm install)
-                
-                SNYK_EXTRA_FLAGS=""
-                if [ -f "uv.lock" ]; then
-                    echo "→ [SCA] uv.lock detected. Using native 'uv run' scan."
-                    SNYK_EXTRA_FLAGS="--file=uv.lock"
-                    set +e
-                    uv run snyk test $SNYK_EXTRA_FLAGS --json > "/app/snyk-output/snyk-test-temp-$NAME.json"
-                    set -e
-                elif [ -f "requirements.txt" ]; then
-                    echo "→ [SCA] requirements.txt detected."
-                    SNYK_EXTRA_FLAGS="--file=requirements.txt --package-manager=pip --command=python3 --skip-unresolved"
-                    set +e
-                    snyk test $SNYK_EXTRA_FLAGS --json > "/app/snyk-output/snyk-test-temp-$NAME.json"
-                    set -e
-                else
-                    set +e
-                    snyk test --all-projects --json > "/app/snyk-output/snyk-test-temp-$NAME.json"
-                    set -e
-                fi
+                echo "→ [SCA] No specific lockfile detected. Using default all-projects scan..."
+                set +e
+                snyk test --all-projects --json > "/app/snyk-output/snyk-test-temp-$NAME.json"
+                code=$?
+                set -e
+                echo "→ Snyk SCA finished with exit code $code."
+            fi
+
+            # 2. Inyectar metadatos SCA
+            echo "→ Processing SCA report metadata..."
+            jq --arg branch "$CURRENT_BRANCH" --arg url "$URL" --arg route "$ROUTE" --arg name "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" \
+            '. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}' \
+            "/app/snyk-output/snyk-test-temp-$NAME.json" > "/app/snyk-output/snyk-test-$NAME.json"
+
+            # 3. Escaneo SAST (Code)
+            echo "→ Running snyk code test (SAST)..."
+            set +e
+            snyk code test --json > "/app/snyk-output/snyk-code-temp-$NAME.json"
+            code=$?
+            set -e
+            echo "→ Snyk Code finished with exit code $code. Processing metadata..."
+            
+            jq --arg branch "$CURRENT_BRANCH" --arg url "$URL" --arg route "$ROUTE" --arg name "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" \
+            '. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}' \
+            "/app/snyk-output/snyk-code-temp-$NAME.json" > "/app/snyk-output/snyk-code-test-$NAME.json"
+
+            # 4. Enviar Webhooks (Con curl silencioso para no ensuciar el log)
+            if [ -s "/app/snyk-output/snyk-test-$NAME.json" ]; then
+                echo "→ Notifying webhook (Snyk SCA)..."
+                curl -s -X POST "$WEBHOOK_URL/snyk-scan/$NAME/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/snyk-output/snyk-test-$NAME.json | jq -r '.message // "Done"'
+            fi
+            
+            if [ -s "/app/snyk-output/snyk-code-test-$NAME.json" ]; then
+                echo "→ Notifying webhook (Snyk SAST)..."
+                curl -s -X POST "$WEBHOOK_URL/snyk-code-scan/$NAME/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/snyk-output/snyk-code-test-$NAME.json | jq -r '.message // "Done"'
+            fi
 
                 # Inyectar metadatos SCA
                 jq --arg branch "$CURRENT_BRANCH" --arg url "$URL" --arg route "$ROUTE" --arg name "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" \
