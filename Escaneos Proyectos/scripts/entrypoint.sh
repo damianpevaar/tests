@@ -10,16 +10,16 @@ set -e
 
 echo "===== Starting Scan Runner ====="
 
-# --- Validation ---
-if [[ -z "$SNYK_CLIENT_ID" ]]; then echo "ERROR: Missing SNYK_CLIENT_ID variable"; exit 1; fi
-if [[ -z "$SNYK_CLIENT_SECRET" ]]; then echo "ERROR: Missing SNYK_CLIENT_SECRET variable"; exit 1; fi
-if [[ -z "$STACKHAWK_API_KEY" ]]; then echo "ERROR: Missing STACKHAWK_API_KEY variable"; exit 1; fi
-if [[ -z "$GITHUB_PAT" ]]; then echo "ERROR: Missing GITHUB_PAT variable"; exit 1; fi
-if [[ -z "$WEBHOOK_URL" ]]; then echo "ERROR: Missing WEBHOOK_URL variable"; exit 1; fi
-#if [[ -z "$USER_EMAIL" ]]; then echo "ERROR: Missing USER_EMAIL variable"; exit 1; fi
-#if [[ -z "$TIMESTAMP" ]]; then echo "ERROR: Missing TIMESTAMP variable"; exit 1; fi
-TIMESTAMP=${TIMESTAMP:-"N/A"}
-USER_EMAIL=${USER_EMAIL:-"N/A"}
+# --- Validaciones OBLIGATORIAS (Si faltan, el script se detiene) ---
+if [[ -z "$SNYK_CLIENT_ID" ]]; then echo "ERROR: Missing SNYK_CLIENT_ID"; exit 1; fi
+if [[ -z "$SNYK_CLIENT_SECRET" ]]; then echo "ERROR: Missing SNYK_CLIENT_SECRET"; exit 1; fi
+if [[ -z "$STACKHAWK_API_KEY" ]]; then echo "ERROR: Missing STACKHAWK_API_KEY"; exit 1; fi
+if [[ -z "$GITHUB_PAT" ]]; then echo "ERROR: Missing GITHUB_PAT"; exit 1; fi
+if [[ -z "$WEBHOOK_URL" ]]; then echo "ERROR: Missing WEBHOOK_URL"; exit 1; fi
+
+# --- Validaciones OPCIONALES con Valor por Defecto ---
+
+echo "→ Config: Email [$USER_EMAIL] | Timestamp [$TIMESTAMP] | Ticket [$TICKET_ID]"
 
 echo "→ Authenticating Snyk CLI"
 snyk auth --auth-type=oauth --client-id="$SNYK_CLIENT_ID" --client-secret="$SNYK_CLIENT_SECRET"
@@ -114,14 +114,19 @@ jq -c '.[]' snyk.json | while read proj; do
         set -e
 
         # --- NEW: Inject branch, url, route, name, timestamp and email ---
+        # --- NUEVA LÓGICA PARA IAC (Soporta Arrays y Objetos) ---
         jq --arg branch "$CURRENT_BRANCH" \
-           --arg url "$URL" \
-           --arg route "$ROUTE" \
-           --arg name "$NAME" \
-           --arg ts "$TIMESTAMP" \
-           --arg email "$USER_EMAIL" \
-           '. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}' \
-           "/app/snyk-output/snyk-iac-temp-$NAME.json" > "/app/snyk-output/snyk-iac-test-$NAME.json"
+        --arg url "$URL" \
+        --arg route "$ROUTE" \
+        --arg name "$NAME" \
+        --arg ts "$TIMESTAMP" \
+        --arg email "$USER_EMAIL" \
+        'if type == "array" then 
+            map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}) 
+            else 
+            . + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email} 
+            end' \
+        "/app/snyk-output/snyk-iac-temp-$NAME.json" > "/app/snyk-output/snyk-iac-test-$NAME.json"
 
         case $code in
             0) echo "Snyk IaC test completed - no issues found";;
