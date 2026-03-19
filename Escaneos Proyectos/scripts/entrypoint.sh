@@ -150,18 +150,14 @@ jq -c '.[]' snyk.json | while read proj; do
             # --- SAST logic ---
             echo "→ Running Snyk Code test (SAST)..."
             set +e; snyk code test --json > "/app/snyk-output/snyk-code-temp-$NAME.json"; set -e
-            jq --arg branch "$CURRENT_BRANCH" \
-			--arg url "$URL" \
-			--arg route "$ROUTE" \
-			--arg name "$NAME" \
-			--arg ts "$TIMESTAMP" \
-			--arg email "$USER_EMAIL" \
-			'if type == "array" then 
-				map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}) 
-			 else 
-				. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email} 
-			 end' \
-			"/app/snyk-output/snyk-code-temp-$NAME.json" > "/app/snyk-output/snyk-code-test-$NAME.json"
+            # Cambia la línea de jq del SCA por esta versión "monorepo-ready":
+            jq --arg branch "$CURRENT_BRANCH" --arg url "$URL" --arg route "$ROUTE" --arg name "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" \
+            'if type == "array" then 
+                map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}) 
+            else 
+                . + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email} 
+            end' \
+            "/app/snyk-output/snyk-test-temp-$NAME.json" > "/app/snyk-output/snyk-test-$NAME.json"
 
             [ -s "/app/snyk-output/snyk-test-$NAME.json" ] && curl -s -X POST "$WEBHOOK_URL/snyk-scan/$NAME/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/snyk-output/snyk-test-$NAME.json | jq -r '.message // "SCA Sent"'
             [ -s "/app/snyk-output/snyk-code-test-$NAME.json" ] && curl -s -X POST "$WEBHOOK_URL/snyk-code-scan/$NAME/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/snyk-output/snyk-code-test-$NAME.json | jq -r '.message // "SAST Sent"'
