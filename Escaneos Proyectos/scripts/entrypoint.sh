@@ -7,34 +7,23 @@ echo "===== Starting Scan Runner ====="
 if [[ -z "$SNYK_CLIENT_ID" ]]; then echo "ERROR: Missing SNYK_CLIENT_ID"; exit 1; fi
 if [[ -z "$SNYK_CLIENT_SECRET" ]]; then echo "ERROR: Missing SNYK_CLIENT_SECRET"; exit 1; fi
 if [[ -z "$STACKHAWK_API_KEY" ]]; then echo "ERROR: Missing STACKHAWK_API_KEY"; exit 1; fi
-# --- Configuración Ultra-Blindada para Git (HTTPS instead of SSH) ---
-# Cubrimos todas las variantes: ssh://, git@github.com:, y git+ssh://
-# --- Configuración Ultra-Blindada para Git ---
-if [[ -n "$GITHUB_PAT" ]]; then
-    echo "→ Applying Git Force-HTTPS Interceptor..."
-    
-    # 1. Configuración global (cubriendo todas las posibilidades)
-    git config --global url."https://${GITHUB_PAT}@github.com/".insteadOf "ssh://git@github.com/"
-    git config --global url."https://${GITHUB_PAT}@github.com/".insteadOf "git@github.com:"
-    git config --global url."https://${GITHUB_PAT}@github.com/".insteadOf "git+ssh://git@github.com/"
-    
-    # 2. LA LLAVE MAESTRA: Variable de entorno para que Git ignore SSH por completo
-    # Esto hace que cualquier intento de usar SSH use el token por HTTPS automáticamente
-    export GIT_ASKPASS=/bin/echo
-    export GIT_TERMINAL_PROMPT=0
-    
-    # 3. Prevenir el error de "Host Key" por si acaso
-    mkdir -p ~/.ssh && chmod 700 ~/.ssh
-    touch ~/.ssh/config
-    echo -e "Host github.com\n\tStrictHostKeyChecking no\n\tUserKnownHostsFile=/dev/null\n" > ~/.ssh/config
-fi
+if [[ -z "$GITHUB_PAT" ]]; then echo "ERROR: Missing GITHUB_PAT"; exit 1; fi
 if [[ -z "$WEBHOOK_URL" ]]; then echo "ERROR: Missing WEBHOOK_URL"; exit 1; fi
 
-# --- Configuración Pro-Seguridad para Git (HTTPS instead of SSH) ---
+# --- Configuración Ultra-Blindada para Git (Interceptor HTTPS) ---
+echo "→ Applying Git Force-HTTPS Interceptor..."
 git config --global url."https://${GITHUB_PAT}@github.com/".insteadOf "ssh://git@github.com/"
 git config --global url."https://${GITHUB_PAT}@github.com/".insteadOf "git@github.com:"
+git config --global url."https://${GITHUB_PAT}@github.com/".insteadOf "git+ssh://git@github.com/"
 
-# --- Validaciones OPCIONALES ---
+export GIT_ASKPASS=/bin/echo
+export GIT_TERMINAL_PROMPT=0
+
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+touch ~/.ssh/config
+echo -e "Host github.com\n\tStrictHostKeyChecking no\n\tUserKnownHostsFile=/dev/null\n" > ~/.ssh/config
+
+# --- Variables Opcionales ---
 TIMESTAMP="${TIMESTAMP:-0}"
 USER_EMAIL="${USER_EMAIL:-0}"
 TICKET_ID="${TICKET_ID:-0}"
@@ -64,7 +53,7 @@ jq -c '.[]' snyk.json | while read proj; do
     echo "Processing Snyk project: $NAME"
 
     if [[ "$URL" != "null" && "$URL" != "" ]]; then
-        # --- Clonado ---
+        # --- Clonado Seguro ---
         set +e
         if [[ -n "$TARGET_BRANCH" && "$TARGET_BRANCH" != "null" ]]; then
             echo "→ Cloning branch [$TARGET_BRANCH] from $URL"
@@ -81,7 +70,6 @@ jq -c '.[]' snyk.json | while read proj; do
             continue
         fi
 
-        # Ruta Absoluta para Snyk
         cd "/app/snyk-projects/$NAME"
         
         if [[ "$ROUTE" != "" && "$ROUTE" != "null" ]]; then
@@ -89,81 +77,78 @@ jq -c '.[]' snyk.json | while read proj; do
                 echo "→ Changing to specified route: $ROUTE"
                 cd "$ROUTE"
             else
-                echo "❌ ERROR: Folder '$ROUTE' not found. Available:"
-                ls -F
+                echo "❌ ERROR: Folder '$ROUTE' not found."
                 cd /app/snyk-projects && continue
             fi
         fi
 
         CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-        
+
+        # ---------------------------------------------------------
+        # 1. ESCANEO DE INFRAESTRUCTURA (IaC)
+        # ---------------------------------------------------------
         if [[ "$URL" =~ [iI][aA][cC] ]]; then
             echo "→ Running Snyk IaC test..."
             set +e
             snyk iac test . --json > "/app/snyk-output/snyk-iac-temp-$NAME.json"
             set -e
+            
             jq --arg branch "$CURRENT_BRANCH" --arg url "$URL" --arg route "$ROUTE" --arg name "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" \
             'if type == "array" then map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}) 
              else . + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email} end' \
             "/app/snyk-output/snyk-iac-temp-$NAME.json" > "/app/snyk-output/snyk-iac-test-$NAME.json"
-            curl -s -X POST "$WEBHOOK_URL/snyk-scan/$NAME/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/snyk-output/snyk-iac-test-$NAME.json | jq -r '.message // "IaC Sent"'
-        else
-            # --- SCA logic ---
-            if [ -f "uv.lock" ]; then
-                echo "→ [SCA] uv.lock detected. Generating temporary requirements for Snyk..."
-                
-                # 1. Parcheamos los archivos (esto ya lo tienes)
-                find . -maxdepth 2 -type f \( -name "uv.lock" -o -name "pyproject.toml" \) -exec sed -i "s|ssh://git@github.com/|https://${GITHUB_PAT}@github.com/|g" {} +
-                find . -maxdepth 2 -type f \( -name "uv.lock" -o -name "pyproject.toml" \) -exec sed -i "s|git+ssh://git@github.com/|https://${GITHUB_PAT}@github.com/|g" {} +
-                
-                # 2. Generamos un requirements.txt real desde el entorno que UV ya resolvió
-                UV_SYSTEM_PYTHON=1 uv export --format requirements-txt --no-dev --output-file snyk-requirements.txt
-                
-                echo "→ Running Snyk scan on generated requirements..."
-                set +e
-                snyk test --file=snyk-requirements.txt --package-manager=pip --skip-unresolved --json > "/app/snyk-output/snyk-test-temp-$NAME.json"
-                code=$?
-                set -e
             
+            curl -s -X POST "$WEBHOOK_URL/snyk-scan/$NAME/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/snyk-output/snyk-iac-test-$NAME.json | jq -r '.message // "IaC Sent"'
+        
+        else
+            # ---------------------------------------------------------
+            # 2. ESCANEO DE LIBRERÍAS (SCA)
+            # ---------------------------------------------------------
+            echo "→ Running Snyk SCA (Dependencies)..."
+            if [ -f "uv.lock" ]; then
+                echo "→ [SCA] uv.lock detected. Exporting requirements..."
+                # Parchear URLs de SSH a HTTPS en los archivos de lock antes de exportar
+                sed -i "s|ssh://git@github.com/|https://${GITHUB_PAT}@github.com/|g" uv.lock pyproject.toml 2>/dev/null || true
+                UV_SYSTEM_PYTHON=1 uv export --format requirements-txt --no-dev --output-file snyk-requirements.txt
+                set +e; snyk test --file=snyk-requirements.txt --package-manager=pip --skip-unresolved --json > "/app/snyk-output/snyk-test-temp-$NAME.json"; set -e
             elif [ -f "requirements.txt" ]; then
-                # ... resto de la lógica de requirements ...
                 echo "→ [SCA] requirements.txt detected..."
-                set +e; snyk test --file=requirements.txt --package-manager=pip --command=python3 --json > "/app/snyk-output/snyk-test-temp-$NAME.json"; set -e
+                set +e; snyk test --file=requirements.txt --package-manager=pip --skip-unresolved --json > "/app/snyk-output/snyk-test-temp-$NAME.json"; set -e
             else
-                echo "→ [SCA] Default scan..."
+                echo "→ [SCA] Generic scan..."
                 set +e; snyk test --all-projects --json > "/app/snyk-output/snyk-test-temp-$NAME.json"; set -e
             fi
-            
-            jq --arg branch "$CURRENT_BRANCH" \
-			--arg url "$URL" \
-			--arg route "$ROUTE" \
-			--arg name "$NAME" \
-			--arg ts "$TIMESTAMP" \
-			--arg email "$USER_EMAIL" \
-			'if type == "array" then 
-				map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}) 
-			 else 
-				. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email} 
-			 end' \
-			"/app/snyk-output/snyk-test-temp-$NAME.json" > "/app/snyk-output/snyk-test-$NAME.json"
 
-            # --- SAST logic ---
-            echo "→ Running Snyk Code test (SAST)..."
-            set +e; snyk code test --json > "/app/snyk-output/snyk-code-temp-$NAME.json"; set -e
-            # Cambia la línea de jq del SCA por esta versión "monorepo-ready":
+            # Inyectar metadata al SCA (Soporta Array u Objeto)
             jq --arg branch "$CURRENT_BRANCH" --arg url "$URL" --arg route "$ROUTE" --arg name "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" \
-            'if type == "array" then 
-                map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}) 
-            else 
-                . + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email} 
-            end' \
+            'if type == "array" then map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}) 
+             else . + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email} end' \
             "/app/snyk-output/snyk-test-temp-$NAME.json" > "/app/snyk-output/snyk-test-$NAME.json"
 
+            # Enviar SCA si no está vacío
             [ -s "/app/snyk-output/snyk-test-$NAME.json" ] && curl -s -X POST "$WEBHOOK_URL/snyk-scan/$NAME/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/snyk-output/snyk-test-$NAME.json | jq -r '.message // "SCA Sent"'
+
+            # ---------------------------------------------------------
+            # 3. ESCANEO DE CÓDIGO FUENTE (SAST) - ¡AQUÍ ESTÁ EL CAMBIO!
+            # ---------------------------------------------------------
+            echo "→ Running Snyk Code test (SAST)..."
+            set +e
+            snyk code test --json > "/app/snyk-output/snyk-code-temp-$NAME.json"
+            set -e
+
+            # Inyectar metadata al SAST (Soporta Array u Objeto)
+            jq --arg branch "$CURRENT_BRANCH" --arg url "$URL" --arg route "$ROUTE" --arg name "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" \
+            'if type == "array" then map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}) 
+             else . + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email} end' \
+            "/app/snyk-output/snyk-code-temp-$NAME.json" > "/app/snyk-output/snyk-code-test-$NAME.json"
+
+            # Enviar SAST si no está vacío
             [ -s "/app/snyk-output/snyk-code-test-$NAME.json" ] && curl -s -X POST "$WEBHOOK_URL/snyk-code-scan/$NAME/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/snyk-output/snyk-code-test-$NAME.json | jq -r '.message // "SAST Sent"'
         fi
+        
         cd /app/snyk-projects
     else
+        # --- Docker Scan ---
         echo "→ Docker image scan: $NAME"
         ECR_PASSWORD=$(aws ecr get-login-password --region us-east-1)
         set +e; snyk container test "${NAME#docker.io/}" --username=AWS --password="$ECR_PASSWORD" --json > "/app/docker-scan-$DOCKER_COUNT-temp.json"; set -e
@@ -172,6 +157,8 @@ jq -c '.[]' snyk.json | while read proj; do
         DOCKER_COUNT=$((DOCKER_COUNT+1))
     fi
 done
+
+# (El resto del bloque de StackHawk se mantiene igual...)
 
 ###############################################
 # Process StackHawk Projects 
