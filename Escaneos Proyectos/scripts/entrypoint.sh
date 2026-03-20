@@ -112,14 +112,14 @@ jq -c '.[]' snyk.json | while read proj; do
         set -e
 
         # --- NEW: Inject branch, url, route, name, timestamp and email ---
-        jq --arg branch "$CURRENT_BRANCH" \
+		jq --arg branch "$CURRENT_BRANCH" \
            --arg url "$URL" \
            --arg route "$ROUTE" \
            --arg name "$NAME" \
            --arg ts "$TIMESTAMP" \
            --arg email "$USER_EMAIL" \
            '. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}' \
-           "/app/snyk-output/snyk-iac-temp-$NAME.json" > "/app/snyk-output/snyk-iac-test-$NAME.json"
+           "/app/snyk-output/snyk-test-temp-$NAME.json" > "/app/snyk-output/snyk-test-$NAME.json"
 
         case $code in
             0) echo "Snyk IaC test completed - no issues found";;
@@ -186,13 +186,17 @@ jq -c '.[]' snyk.json | while read proj; do
         
         # --- NEW: Inject branch, url, route, name, timestamp and email ---
         jq --arg branch "$CURRENT_BRANCH" \
-           --arg url "$URL" \
-           --arg route "$ROUTE" \
-           --arg name "$NAME" \
-           --arg ts "$TIMESTAMP" \
-           --arg email "$USER_EMAIL" \
-           '. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}' \
-           "/app/snyk-output/snyk-test-temp-$NAME.json" > "/app/snyk-output/snyk-test-$NAME.json"
+			--arg url "$URL" \
+			--arg route "$ROUTE" \
+			--arg name "$NAME" \
+			--arg ts "$TIMESTAMP" \
+			--arg email "$USER_EMAIL" \
+			'if type == "array" then 
+				map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}) 
+			 else 
+				. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email} 
+			 end' \
+			"/app/snyk-output/snyk-test-temp-$NAME.json" > "/app/snyk-output/snyk-test-$NAME.json"
         
         # 2. Code (SAST) Scan
         echo "→ Running snyk code test (SAST)"
@@ -203,13 +207,17 @@ jq -c '.[]' snyk.json | while read proj; do
 
         # --- NEW: Inject branch, url, route, name, timestamp and email ---
         jq --arg branch "$CURRENT_BRANCH" \
-           --arg url "$URL" \
-           --arg route "$ROUTE" \
-           --arg name "$NAME" \
-           --arg ts "$TIMESTAMP" \
-           --arg email "$USER_EMAIL" \
-           '. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}' \
-           "/app/snyk-output/snyk-code-temp-$NAME.json" > "/app/snyk-output/snyk-code-test-$NAME.json"
+			--arg url "$URL" \
+			--arg route "$ROUTE" \
+			--arg name "$NAME" \
+			--arg ts "$TIMESTAMP" \
+			--arg email "$USER_EMAIL" \
+			'if type == "array" then 
+				map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}) 
+			 else 
+				. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email} 
+			 end' \
+			"/app/snyk-output/snyk-code-temp-$NAME.json" > "/app/snyk-output/snyk-code-test-$NAME.json"
         
         # Cleanup
         if command -v deactivate >/dev/null 2>&1; then echo "→ Deactivating python venv"; deactivate; fi
