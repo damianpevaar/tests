@@ -158,8 +158,6 @@ jq -c '.[]' snyk.json | while read proj; do
     fi
 done
 
-# (El resto del bloque de StackHawk se mantiene igual...)
-
 ###############################################
 # Process StackHawk Projects 
 ###############################################
