@@ -36,6 +36,26 @@ snyk auth --auth-type=oauth --client-id="$SNYK_CLIENT_ID" --client-secret="$SNYK
 echo "→ Authenticating StackHawk CLI..."
 hawk init --api-key="$STACKHAWK_API_KEY" > /dev/null
 
+echo "→ Validating StackHawk Credentials and OrgID..."
+
+# Intentamos un GET simple para validar la conexión
+# Usamos el OrgID que tienes (asegúrate de pasar la variable STACKHAWK_ORG_ID al docker)
+HTTP_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X GET "https://api.stackhawk.com/api/v1/applications" \
+  -H "X-Hawk-ApiKey: $STACKHAWK_API_KEY" \
+  -H "X-Hawk-Organization-ID: $STACKHAWK_ORG_ID" \
+  -H "Accept: application/json")
+
+if [ "$HTTP_RESPONSE" -eq 200 ]; then
+    echo "✅ StackHawk API Connection: SUCCESS (200 OK)"
+else
+    echo "❌ StackHawk API Connection: FAILED (Status: $HTTP_RESPONSE)"
+    echo "Check if STACKHAWK_ORG_ID is correct and the Key has API permissions."
+    # Opcional: exit 1 si quieres que el contenedor se detenga si no hay API
+fi
+
+echo "→ Authenticating StackHawk CLI..."
+hawk init --api-key="$STACKHAWK_API_KEY" > /dev/null
+
 ###############################################
 # Process Snyk Projects
 ###############################################
