@@ -27,31 +27,13 @@ echo -e "Host github.com\n\tStrictHostKeyChecking no\n\tUserKnownHostsFile=/dev/
 TIMESTAMP="${TIMESTAMP:-0}"
 USER_EMAIL="${USER_EMAIL:-0}"
 TICKET_ID="${TICKET_ID:-0}"
+STACKHAWK_DB_USER="${STACKHAWK_DB_USER:-0}"
+STACKHAWK_DB_PASS="${STACKHAWK_DB_PASS:-0}"
 
 echo "→ Config: Email [$USER_EMAIL] | Timestamp [$TIMESTAMP] | Ticket [$TICKET_ID]"
 
 echo "→ Authenticating Snyk CLI..."
 snyk auth --auth-type=oauth --client-id="$SNYK_CLIENT_ID" --client-secret="$SNYK_CLIENT_SECRET"
-
-echo "→ Authenticating StackHawk CLI..."
-hawk init --api-key="$STACKHAWK_API_KEY" > /dev/null
-
-echo "→ Validating StackHawk Credentials and OrgID..."
-
-# Intentamos un GET simple para validar la conexión
-# Usamos el OrgID que tienes (asegúrate de pasar la variable STACKHAWK_ORG_ID al docker)
-HTTP_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X GET "https://api.stackhawk.com/api/v1/applications" \
-  -H "X-Hawk-ApiKey: $STACKHAWK_API_KEY" \
-  -H "X-Hawk-Organization-ID: $STACKHAWK_ORG_ID" \
-  -H "Accept: application/json")
-
-if [ "$HTTP_RESPONSE" -eq 200 ]; then
-    echo "✅ StackHawk API Connection: SUCCESS (200 OK)"
-else
-    echo "❌ StackHawk API Connection: FAILED (Status: $HTTP_RESPONSE)"
-    echo "Check if STACKHAWK_ORG_ID is correct and the Key has API permissions."
-    # Opcional: exit 1 si quieres que el contenedor se detenga si no hay API
-fi
 
 echo "→ Authenticating StackHawk CLI..."
 hawk init --api-key="$STACKHAWK_API_KEY" > /dev/null
@@ -178,13 +160,12 @@ jq -c '.[]' snyk.json | while read proj; do
     fi
 done
 
-# (El resto del bloque de StackHawk se mantiene igual...)
-
 ###############################################
 # Process StackHawk Projects 
 ###############################################
 cd /app/stackhawk-projects
 echo "$STACKHAWK_PROJECTS" > hawk.json
+
 jq -c '.[]' hawk.json | while read proj; do
     NAME=$(echo "$proj" | jq -r '.name')
     URL=$(echo "$proj" | jq -r '.url')
@@ -195,6 +176,7 @@ jq -c '.[]' hawk.json | while read proj; do
     echo "Processing StackHawk project: $NAME"
 
     if [[ "$URL" != "null" && "$URL" != "" ]]; then
+        # 1. Clonado del repositorio
         set +e
         if [[ -n "$TARGET_BRANCH" && "$TARGET_BRANCH" != "null" ]]; then
             git clone -b "$TARGET_BRANCH" --single-branch "https://$GITHUB_PAT@${URL#https://}" "$NAME" --quiet
@@ -212,30 +194,53 @@ jq -c '.[]' hawk.json | while read proj; do
         cd "/app/stackhawk-projects/$NAME"
         
         if [[ "$ROUTE" != "" && "$ROUTE" != "null" ]]; then
-            [ -f "stackhawk.yml" ] && [ ! -f "$ROUTE/stackhawk.yml" ] && cp stackhawk.yml "$ROUTE/"
             cd "$ROUTE"
         fi
 
-        CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+       # 2. Inyección y Personalización del YAML
+        if [ -f "/app/stackhawk-test.yml" ]; then
+            echo "🚀 Override: Usando estructura local stackhawk-test.yml"
+            cat /app/stackhawk-test.yml > ./stackhawk.yml
+        fi
+
+        # SI se pasaron credenciales por Docker, las inyectamos en el stackhawk.yml
+        if [[ "$STACKHAWK_DB_USER" != "0" && "$STACKHAWK_DB_PASS" != "0" ]]; then
+            echo "🔐 Injecting Test Credentials into stackhawk.yml..."
+            
+            # Buscamos las etiquetas <USER> y <PASS> en el archivo y las reemplazamos
+            sed -i "s|<USER>|$STACKHAWK_DB_USER|g" ./stackhawk.yml
+            sed -i "s|<PASS>|$STACKHAWK_DB_PASS|g" ./stackhawk.yml
+        fi
+
+        # 3. Configuración para generar reporte SARIF
         export SARIF_ARTIFACT=true
-        
+        CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
         echo "→ Running hawk scan..."
         set +e
-        hawk scan --no-progress 2>&1 | tee /tmp/hawk_scan_live.log
-        SCAN_OUTPUT=$(cat /tmp/hawk_scan_live.log)
+        # Ejecutamos el comando compatible con la versión 5.1.0
+        hawk scan stackhawk.yml --no-progress 2>&1 | tee /tmp/hawk_scan_live.log
         set -e
-        
-        SCAN_ID=$(echo "$SCAN_OUTPUT" | grep -i "scan id" | awk '{print $NF}')
-        
-        if [[ -n "$SCAN_ID" ]]; then
-            if [ -f "stackhawk.sarif" ]; then
-                jq --arg branch "$CURRENT_BRANCH" --arg ticket "$TICKET_ID" --arg folder "$ROUTE" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" \
-                '. + {git_branch: $branch, ticket_id: $ticket, folder_route: $folder, scan_timestamp: $ts, user_email: $email}' \
-                stackhawk.sarif > payload_hawk.json
-                curl -s -X POST "$WEBHOOK_URL/stackhawk-cloud-sec/$NAME" -H "Content-Type: application/json" --data-binary @payload_hawk.json | jq -r '.message // "Hawk Sent"'
-            fi
+
+        # 4. Envío de resultados al Webhook (SARIF)
+        # Buscamos el archivo en el directorio actual del proyecto
+        if [ -f "stackhawk.sarif" ]; then
+            echo "✅ SARIF found! Injecting metadata and sending to webhook..."
+            
+            # Inyectamos metadata al SARIF antes de enviarlo
+            jq --arg branch "$CURRENT_BRANCH" --arg ticket "$TICKET_ID" --arg folder "$ROUTE" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" \
+            '. + {git_branch: $branch, ticket_id: $ticket, folder_route: $folder, scan_timestamp: $ts, user_email: $email}' \
+            stackhawk.sarif > payload_hawk.json
+            
+            curl -s -X POST "$WEBHOOK_URL/stackhawk-cloud-sec/$NAME" \
+                -H "Content-Type: application/json" \
+                --data-binary @payload_hawk.json | jq -r '.message // "Hawk Sent"'
+        else
+            echo "❌ SARIF NOT FOUND in $(pwd). Webhook not sent."
+            ls -lh # Listamos archivos para ver por qué no se generó
         fi
     fi
+    # Regresamos a la carpeta base de proyectos para la siguiente iteración
     cd /app/stackhawk-projects
 done
 

@@ -1,0 +1,24 @@
+app:
+  applicationId: "5403d1af-b95d-429b-adc9-a77a7ea5eccf"
+  env: "Development"
+  host: "https://app.stage.simetrik.com"
+
+authenticate:
+  main:
+    method: form
+    properties:
+      loginPath: "https://accounts.stage.simetrik.com/u/login" 
+      userField: "username"
+      passwordField: "password"
+    credentials:
+      user: "<USER>"
+      pass: "<PASS>"
+
+hawk:
+  spider:
+    base: true
+    browserScanner: true
+    basePositions:
+      - "/solutions/catalog/30c4a626-1097-4c3c-8ec6-55d2fe8c2dc3/detail"
+
+  startupTimeoutMinutes: 5
