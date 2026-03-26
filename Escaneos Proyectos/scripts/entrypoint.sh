@@ -105,18 +105,38 @@ jq -c '.[]' snyk.json | while read proj; do
             # 2. ESCANEO DE LIBRERÍAS (SCA)
             # ---------------------------------------------------------
             echo "→ Running Snyk SCA (Dependencies)..."
+
             if [ -f "uv.lock" ]; then
-                echo "→ [SCA] uv.lock detected. Exporting requirements..."
-                # Parchear URLs de SSH a HTTPS en los archivos de lock antes de exportar
+                echo "→ [SCA] uv.lock detected. Synchronizing environment..."
+                # Parchear URLs de SSH a HTTPS
                 sed -i "s|ssh://git@github.com/|https://${GITHUB_PAT}@github.com/|g" uv.lock pyproject.toml 2>/dev/null || true
+                
+                # NUEVO: Instalamos las dependencias para que Snyk vea los metadatos
+                uv pip install --system --break-system-packages -r pyproject.toml 2>/dev/null || true
+                
                 UV_SYSTEM_PYTHON=1 uv export --format requirements-txt --no-dev --output-file snyk-requirements.txt
                 set +e; snyk test --file=snyk-requirements.txt --package-manager=pip --skip-unresolved --json > "/app/snyk-output/snyk-test-temp-$NAME.json"; set -e
+
             elif [ -f "requirements.txt" ]; then
-                echo "→ [SCA] requirements.txt detected..."
+                echo "→ [SCA] requirements.txt detected. Installing for metadata..."
+                # NUEVO: Instalamos dependencias para evitar el error de 'jaraco'
+                uv pip install --system --break-system-packages -r requirements.txt 2>/dev/null || true
+                
                 set +e; snyk test --file=requirements.txt --package-manager=pip --skip-unresolved --json > "/app/snyk-output/snyk-test-temp-$NAME.json"; set -e
             else
                 echo "→ [SCA] Generic scan..."
-                set +e; snyk test --all-projects --json > "/app/snyk-output/snyk-test-temp-$NAME.json"; set -e
+                
+                # Intentar instalar dependencias para resolver metadatos transitivos
+                if [ -f "pyproject.toml" ] || [ -f "setup.py" ] || [ -f "setup.cfg" ]; then
+                    echo "→ [SCA] Resolving transitive dependencies..."
+                    uv pip install --system --break-system-packages -e . 2>/dev/null || \
+                    uv pip install --system --break-system-packages . 2>/dev/null || true
+                fi
+
+                set +e
+                snyk test --all-projects --skip-unresolved --json \
+                    > "/app/snyk-output/snyk-test-temp-$NAME.json"
+                set -e
             fi
 
             # Inyectar metadata al SCA (Soporta Array u Objeto)
@@ -158,13 +178,14 @@ jq -c '.[]' snyk.json | while read proj; do
     fi
 done
 
-# (El resto del bloque de StackHawk se mantiene igual...)
 
 ###############################################
 # Process StackHawk Projects 
 ###############################################
 cd /app/stackhawk-projects
 echo "$STACKHAWK_PROJECTS" > hawk.json
+
+# Procesar cada proyecto definido en el JSON
 jq -c '.[]' hawk.json | while read proj; do
     NAME=$(echo "$proj" | jq -r '.name')
     URL=$(echo "$proj" | jq -r '.url')
@@ -175,47 +196,78 @@ jq -c '.[]' hawk.json | while read proj; do
     echo "Processing StackHawk project: $NAME"
 
     if [[ "$URL" != "null" && "$URL" != "" ]]; then
+        # 1. Clonado del repositorio
         set +e
         if [[ -n "$TARGET_BRANCH" && "$TARGET_BRANCH" != "null" ]]; then
+            echo "→ Cloning branch [$TARGET_BRANCH]..."
             git clone -b "$TARGET_BRANCH" --single-branch "https://$GITHUB_PAT@${URL#https://}" "$NAME" --quiet
         else
+            echo "→ Cloning default branch..."
             git clone "https://$GITHUB_PAT@${URL#https://}" "$NAME" --quiet
         fi
         CLONE_EXIT_CODE=$?
         set -e
 
         if [ $CLONE_EXIT_CODE -ne 0 ]; then
-            echo "❌ ERROR: Failed to clone for StackHawk. Skipping."
+            echo "❌ ERROR: Failed to clone $NAME. Skipping."
             continue
         fi
 
+        # 2. Navegar al directorio del proyecto
         cd "/app/stackhawk-projects/$NAME"
         
+        # 3. Entrar en la sub-ruta (ROUTE) si está definida
         if [[ "$ROUTE" != "" && "$ROUTE" != "null" ]]; then
-            [ -f "stackhawk.yml" ] && [ ! -f "$ROUTE/stackhawk.yml" ] && cp stackhawk.yml "$ROUTE/"
-            cd "$ROUTE"
+            if [ -d "$ROUTE" ]; then
+                echo "→ Changing to specified route: $ROUTE"
+                cd "$ROUTE"
+            else
+                echo "⚠️ WARNING: Folder '$ROUTE' not found, staying in root."
+            fi
         fi
 
+        # 4. VERIFICACIÓN DE CONFIGURACIÓN
+        # En lugar de inyectar, verificamos si el archivo existe en el repo
+        if [ ! -f "stackhawk.yml" ]; then
+            echo "❌ ERROR: No stackhawk.yml found in $(pwd). Skipping scan."
+            cd /app/stackhawk-projects
+            continue
+        fi
+
+        # 5. Configuración de entorno para Hawk
         CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
         export SARIF_ARTIFACT=true
-        
-        echo "→ Running hawk scan..."
+
+        # 6. Ejecución del Escaneo
+        echo "→ Running hawk scan using repository configuration..."
         set +e
+        # Ejecutamos el scan directamente. Hawk leerá el stackhawk.yml local.
         hawk scan --no-progress 2>&1 | tee /tmp/hawk_scan_live.log
         SCAN_OUTPUT=$(cat /tmp/hawk_scan_live.log)
         set -e
         
+        # 7. Capturar Scan ID y enviar resultados (SARIF)
         SCAN_ID=$(echo "$SCAN_OUTPUT" | grep -i "scan id" | awk '{print $NF}')
         
         if [[ -n "$SCAN_ID" ]]; then
             if [ -f "stackhawk.sarif" ]; then
+                echo "→ Sending SARIF results to webhook..."
                 jq --arg branch "$CURRENT_BRANCH" --arg ticket "$TICKET_ID" --arg folder "$ROUTE" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" \
                 '. + {git_branch: $branch, ticket_id: $ticket, folder_route: $folder, scan_timestamp: $ts, user_email: $email}' \
                 stackhawk.sarif > payload_hawk.json
-                curl -s -X POST "$WEBHOOK_URL/stackhawk-cloud-sec/$NAME" -H "Content-Type: application/json" --data-binary @payload_hawk.json | jq -r '.message // "Hawk Sent"'
+                
+                curl -s -X POST "$WEBHOOK_URL/stackhawk-cloud-sec/$NAME" \
+                     -H "Content-Type: application/json" \
+                     --data-binary @payload_hawk.json | jq -r '.message // "Hawk Results Sent"'
+            else
+                echo "⚠️ WARNING: stackhawk.sarif not found. Skipping webhook."
             fi
+        else
+            echo "❌ ERROR: Hawk scan failed. Check logs above."
         fi
     fi
+    
+    # Volver a la carpeta base para el siguiente proyecto
     cd /app/stackhawk-projects
 done
 
