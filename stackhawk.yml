@@ -1,0 +1,37 @@
+hawk:
+  startupTimeoutMinutes: 5
+  spider:
+    base: true
+    maxDurationMinutes: 5
+
+app:
+  applicationId: "8f2bc975-a3e9-487e-b749-a1c05cbd179a"
+  env: Development
+  host: "https://app.stage.simetrik.com"
+
+  authentication:
+    loggedInIndicator: ".*Logout.*"
+    loggedOutIndicator: ".*Login.*"
+
+    external:
+      loginHost: https://accounts.stage.simetrik.com
+      loginPath: /u/login/identifier
+      # CAMBIO CRÍTICO: El valor debe ser un objeto con el selector
+      values:
+        - name: username
+          value: 
+            # Esto le dice: busca un input con name='username'
+            name: username
+            value: ${SCAN_USER}
+        - name: password
+          value:
+            # Esto le dice: busca un input con name='password'
+            name: password
+            value: ${SCAN_PASS}
+    
+    cookieAuthorization:
+      cookieNames: [] 
+
+    testPath:
+      path: /
+      success: ".*200.*"
