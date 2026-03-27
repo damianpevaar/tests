@@ -1,9 +1,8 @@
-#!/bin/bash
+
 set -e
 
 echo "===== Starting Scan Runner ====="
 
-# --- Validaciones OBLIGATORIAS ---
 if [[ -z "$SNYK_CLIENT_ID" ]]; then echo "ERROR: Missing SNYK_CLIENT_ID"; exit 1; fi
 if [[ -z "$SNYK_CLIENT_SECRET" ]]; then echo "ERROR: Missing SNYK_CLIENT_SECRET"; exit 1; fi
 if [[ -z "$STACKHAWK_API_KEY" ]]; then echo "ERROR: Missing STACKHAWK_API_KEY"; exit 1; fi
@@ -11,7 +10,7 @@ if [[ -z "$GITHUB_PAT" ]]; then echo "ERROR: Missing GITHUB_PAT"; exit 1; fi
 if [[ -z "$WEBHOOK_URL" ]]; then echo "ERROR: Missing WEBHOOK_URL"; exit 1; fi
 
 
-# --- Configuración Ultra-Blindada para Git (Interceptor HTTPS) ---
+
 echo "→ Applying Git Force-HTTPS Interceptor..."
 git config --global url."https://${GITHUB_PAT}@github.com/".insteadOf "ssh://git@github.com/"
 git config --global url."https://${GITHUB_PAT}@github.com/".insteadOf "git@github.com:"
@@ -24,7 +23,7 @@ mkdir -p ~/.ssh && chmod 700 ~/.ssh
 touch ~/.ssh/config
 echo -e "Host github.com\n\tStrictHostKeyChecking no\n\tUserKnownHostsFile=/dev/null\n" > ~/.ssh/config
 
-# --- Variables Opcionales ---
+
 TIMESTAMP="${TIMESTAMP:-0}"
 USER_EMAIL="${USER_EMAIL:-0}"
 TICKET_ID="${TICKET_ID:-0}"
@@ -54,7 +53,6 @@ jq -c '.[]' snyk.json | while read proj; do
     echo "Processing Snyk project: $NAME"
 
     if [[ "$URL" != "null" && "$URL" != "" ]]; then
-        # --- Clonado Seguro ---
         set +e
         if [[ -n "$TARGET_BRANCH" && "$TARGET_BRANCH" != "null" ]]; then
             echo "→ Cloning branch [$TARGET_BRANCH] from $URL"
@@ -109,25 +107,20 @@ jq -c '.[]' snyk.json | while read proj; do
 
             if [ -f "uv.lock" ]; then
                 echo "→ [SCA] uv.lock detected. Synchronizing environment..."
-                # Parchear URLs de SSH a HTTPS
                 sed -i "s|ssh://git@github.com/|https://${GITHUB_PAT}@github.com/|g" uv.lock pyproject.toml 2>/dev/null || true
                 
-                # NUEVO: Instalamos las dependencias para que Snyk vea los metadatos
                 uv pip install --system --break-system-packages -r pyproject.toml 2>/dev/null || true
                 
                 UV_SYSTEM_PYTHON=1 uv export --format requirements-txt --no-dev --output-file snyk-requirements.txt
                 set +e; snyk test --file=snyk-requirements.txt --package-manager=pip --skip-unresolved --json > "/app/snyk-output/snyk-test-temp-$NAME.json"; set -e
 
             elif [ -f "requirements.txt" ]; then
-                echo "→ [SCA] requirements.txt detected. Installing for metadata..."
-                # NUEVO: Instalamos dependencias para evitar el error de 'jaraco'
                 uv pip install --system --break-system-packages -r requirements.txt 2>/dev/null || true
                 
                 set +e; snyk test --file=requirements.txt --package-manager=pip --skip-unresolved --json > "/app/snyk-output/snyk-test-temp-$NAME.json"; set -e
             else
                 echo "→ [SCA] Generic scan..."
                 
-                # Intentar instalar dependencias para resolver metadatos transitivos
                 if [ -f "pyproject.toml" ] || [ -f "setup.py" ] || [ -f "setup.cfg" ]; then
                     echo "→ [SCA] Resolving transitive dependencies..."
                     uv pip install --system --break-system-packages -e . 2>/dev/null || \
@@ -140,13 +133,11 @@ jq -c '.[]' snyk.json | while read proj; do
                 set -e
             fi
 
-            # Inyectar metadata al SCA (Soporta Array u Objeto)
             jq --arg branch "$CURRENT_BRANCH" --arg url "$URL" --arg route "$ROUTE" --arg name "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" \
             'if type == "array" then map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}) 
              else . + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email} end' \
             "/app/snyk-output/snyk-test-temp-$NAME.json" > "/app/snyk-output/snyk-test-$NAME.json"
 
-            # Enviar SCA si no está vacío
             [ -s "/app/snyk-output/snyk-test-$NAME.json" ] && curl -s -X POST "$WEBHOOK_URL/snyk-scan/$NAME/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/snyk-output/snyk-test-$NAME.json | jq -r '.message // "SCA Sent"'
 
             # ---------------------------------------------------------
@@ -157,19 +148,16 @@ jq -c '.[]' snyk.json | while read proj; do
             snyk code test --json > "/app/snyk-output/snyk-code-temp-$NAME.json"
             set -e
 
-            # Inyectar metadata al SAST (Soporta Array u Objeto)
             jq --arg branch "$CURRENT_BRANCH" --arg url "$URL" --arg route "$ROUTE" --arg name "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" \
             'if type == "array" then map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}) 
              else . + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email} end' \
             "/app/snyk-output/snyk-code-temp-$NAME.json" > "/app/snyk-output/snyk-code-test-$NAME.json"
 
-            # Enviar SAST si no está vacío
             [ -s "/app/snyk-output/snyk-code-test-$NAME.json" ] && curl -s -X POST "$WEBHOOK_URL/snyk-code-scan/$NAME/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/snyk-output/snyk-code-test-$NAME.json | jq -r '.message // "SAST Sent"'
         fi
         
         cd /app/snyk-projects
     else
-        # --- Docker Scan ---
         echo "→ Docker image scan: $NAME"
         ECR_PASSWORD=$(aws ecr get-login-password --region us-east-1)
         set +e; snyk container test "${NAME#docker.io/}" --username=AWS --password="$ECR_PASSWORD" --json > "/app/docker-scan-$DOCKER_COUNT-temp.json"; set -e
@@ -186,7 +174,6 @@ done
 cd /app/stackhawk-projects
 echo "$STACKHAWK_PROJECTS" > hawk.json
 
-# Procesar cada proyecto definido en el JSON
 jq -c '.[]' hawk.json | while read proj; do
     NAME=$(echo "$proj" | jq -r '.name')
     URL=$(echo "$proj" | jq -r '.url')
@@ -228,7 +215,6 @@ jq -c '.[]' hawk.json | while read proj; do
         fi
 
         # 4. VERIFICACIÓN DE CONFIGURACIÓN
-        # En lugar de inyectar, verificamos si el archivo existe en el repo
         if [ ! -f "stackhawk.yml" ]; then
             echo "❌ ERROR: No stackhawk.yml found in $(pwd). Skipping scan."
             cd /app/stackhawk-projects
@@ -242,7 +228,6 @@ jq -c '.[]' hawk.json | while read proj; do
         # 6. Ejecución del Escaneo
         echo "→ Running hawk scan using repository configuration..."
         set +e
-        # Ejecutamos el scan directamente. Hawk leerá el stackhawk.yml local.
         hawk scan --no-progress 2>&1 | tee /tmp/hawk_scan_live.log
         SCAN_OUTPUT=$(cat /tmp/hawk_scan_live.log)
         set -e
@@ -268,7 +253,6 @@ jq -c '.[]' hawk.json | while read proj; do
         fi
     fi
     
-    # Volver a la carpeta base para el siguiente proyecto
     cd /app/stackhawk-projects
 done
 

@@ -1,58 +1,42 @@
-#syntax=docker/dockerfile:1
 FROM alpine:3.21 AS builder
 
-# 1. Instalar herramientas de construcción (Aquí ya tenemos build-base)
 RUN apk add --no-cache build-base ca-certificates curl unzip git openssh-client
 
-
-# 2. StackHawk
 RUN curl -s https://download.stackhawk.com/hawk/cli/hawk-5.1.0.zip -o /tmp/hawk-5.1.0.zip \
     && unzip -q /tmp/hawk-5.1.0.zip -d /opt/ && rm /tmp/hawk-5.1.0.zip
 
-# 3. UV
 RUN curl -LsSf https://astral.sh/uv/0.10.0/install.sh | env UV_INSTALL_DIR="/usr/local/bin" sh
 
-# ================================
-# Runtime stage
-# ================================
 FROM alpine:3.21
 
 ENV PATH="/opt/hawk-5.1.0:${PATH}"
 ENV JAVA_TOOL_OPTIONS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
 
-# 1. UNIFICADO: Dependencias de ejecución + Compiladores
-# Añadimos build-base y python3-dev aquí para que snowflake-connector pueda compilar
 RUN apk add --no-cache \
     ca-certificates curl git jq bash python3 py3-pip nodejs npm \
     dos2unix libstdc++ gcompat openjdk17-jre-headless openssh-client \
     build-base python3-dev
 
-# 2. Copiar UV desde el builder
 COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
 
-# 3. Instalar AWS CLI
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system --break-system-packages awscli
 
-# 4. Instalar Snyk
 RUN npm install -g snyk@latest
 
-# 1. PRIMERO: Crear el grupo y el usuario
 RUN addgroup -S scanner && adduser -S scanner -G scanner
 
-# 2. SEGUNDO: Crear los directorios necesarios y el home
+
 RUN mkdir -p /home/scanner/.cache \
     && mkdir -p /app/snyk-projects /app/stackhawk-projects /app/snyk-output /app/stackhawk-output
 
-# 3. TERCERO: Dar los permisos ahora que el usuario 'scanner' ya existe
+
 RUN chown -R scanner:scanner /home/scanner /app
 
-# 4. CUARTO: Configurar las variables de entorno
 ENV HOME=/home/scanner
 ENV PYTHONUSERBASE=/home/scanner/.local
 ENV PATH="/home/scanner/.local/bin:${PATH}"
 
-# 5. CONTINUAR con el resto
 COPY --from=builder /opt/hawk-5.1.0 /opt/hawk-5.1.0
 WORKDIR /app
 COPY --chown=scanner:scanner scripts/entrypoint.sh /app/entrypoint.sh
