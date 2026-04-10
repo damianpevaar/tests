@@ -1,48 +1,43 @@
 #!/bin/bash
-set -e
- 
-echo "===== INICIANDO PROCESO DE ESCANEO (JSON) ====="
- 
-# 1. Validación básica
-if [ -z "$TARGET_URL" ]; then
-  echo "ERROR: TARGET_URL no definido"
-  exit 1
-fi
- 
-# 2. Limpieza de URL -> dominio
-DOMAIN=$(echo "$TARGET_URL" | sed -e 's|^[^/]*//||' -e 's|/.*$||')
- 
+set +e
+
+echo "===== INICIANDO ESCANEO ZAP (HEADLESS MODE) ====="
 echo "→ Objetivo: $TARGET_URL"
-echo "→ Dominio: $DOMAIN"
- 
-# 3. ZAP en modo JSON
-# EL CAMBIO CLAVE: .json al final
-echo "→ Corriendo OWASP ZAP..."
-zap-cli -p 8080 status || true # Asegurar que no haya bloqueos previos
-zap -cmd -quickurl "$TARGET_URL" -quickout /tmp/zap_report.json -quickprogress || true
- 
-# 4. Lectura segura del reporte
-if [ -f /tmp/zap_report.json ]; then
-  # Leemos el archivo tal cual
-  ZAP_JSON_CONTENT=$(cat /tmp/zap_report.json)
+
+export PATH=$PATH:/zap
+REPORT_PATH="/tmp/zap_report.json"
+RESULT_PATH="/tmp/zap_res.json"
+
+cd /zap/wrk
+
+python3 /usr/local/bin/zap-baseline.py \
+    -t "$TARGET_URL" \
+    -J zap_report.json \
+    -m 5 \
+    -z "-Xmx512m" || true
+
+# Procesamiento del reporte
+if [ -f "/zap/wrk/zap_report.json" ]; then
+    mv /zap/wrk/zap_report.json "$REPORT_PATH"
+elif [ -f "zap_report.json" ]; then
+    mv zap_report.json "$REPORT_PATH"
 else
-  # Fallback en JSON válido por si falla ZAP
-  ZAP_JSON_CONTENT='{"error": "No se generó reporte", "site": []}'
+    echo '{"alerts": [], "note": "ZAP no generó reporte"}' > "$REPORT_PATH"
 fi
- 
-# 5. Envío a n8n usando tmp 
+
+# Construir payload con mismo formato que nmap.sh
 PAYLOAD=$(jq -n \
   --arg target "$TARGET_URL" \
-  --arg domain "$DOMAIN" \
-  --argjson zap_results "$ZAP_JSON_CONTENT" \
+  --arg date "$(date '+%Y-%m-%d %H:%M:%S')" \
+  --slurpfile zap_data "$REPORT_PATH" \
   '{
     info: {
       url: $target,
-      host: $domain,
-      scan_date: (now | strftime("%Y-%m-%d %H:%M:%S"))
+      scan: "ZAP Baseline",
+      scan_date: $date
     },
-    results: $zap_results
+    results: $zap_data[0]
   }')
- 
-echo "$PAYLOAD" > /tmp/zap_res.json
-echo "===== ESCANEO FINALIZADO ====="
+
+echo "$PAYLOAD" > "$RESULT_PATH"
+echo "===== ZAP FINALIZADO ====="

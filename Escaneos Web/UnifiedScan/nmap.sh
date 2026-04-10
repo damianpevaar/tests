@@ -19,8 +19,6 @@ echo "→ Dominio extraído: $DOMAIN"
 echo "→ Corriendo Nmap..."
 NMAP_OUT=$(nmap -sS -T3 -Pn -sV -O --script=default,vuln --open "$DOMAIN" | tr '\n' '\\n')
 
-# Envío a n8n via tmp
-echo "→ Enviando resultados a n8n..."
 
 PAYLOAD=$(jq -n \
   --arg target "$TARGET_URL" \
