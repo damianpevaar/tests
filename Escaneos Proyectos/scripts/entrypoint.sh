@@ -153,7 +153,7 @@ jq -c '.[]' snyk.json | while read proj; do
              else . + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email} end' \
             "/app/snyk-output/snyk-code-temp-$NAME.json" > "/app/snyk-output/snyk-code-test-$NAME.json"
 
-            [ -s "/app/snyk-output/snyk-code-test-$NAME.json" ] && curl -s -X POST "$WEBHOOK_URL/snyk-code-scan/$NAME/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/snyk-output/snyk-code-test-$NAME.json | jq -r '.message // "SAST Sent"'
+            [ -s "/app/snyk-output/snyk-code-test-$NAME.json" ] && curl -s -X POST "$WEBHOOK_URL/snyk-code/$NAME/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/snyk-output/snyk-code-test-$NAME.json | jq -r '.message // "SAST Sent"'
         fi
         
         cd /app/snyk-projects
