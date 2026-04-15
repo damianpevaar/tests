@@ -10,7 +10,6 @@ if [[ -z "$GITHUB_PAT" ]]; then echo "ERROR: Missing GITHUB_PAT"; exit 1; fi
 if [[ -z "$WEBHOOK_URL" ]]; then echo "ERROR: Missing WEBHOOK_URL"; exit 1; fi
 
 
-
 echo "→ Applying Git Force-HTTPS Interceptor..."
 git config --global url."https://${GITHUB_PAT}@github.com/".insteadOf "ssh://git@github.com/"
 git config --global url."https://${GITHUB_PAT}@github.com/".insteadOf "git@github.com:"
@@ -84,21 +83,28 @@ jq -c '.[]' snyk.json | while read proj; do
         CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
         # ---------------------------------------------------------
-        # 1. ESCANEO DE INFRAESTRUCTURA (IaC)
+        # 1. ESCANEO DE INFRAESTRUCTURA (IaC) — CORREGIDO
         # ---------------------------------------------------------
         if [[ "$URL" =~ [iI][aA][cC] ]]; then
             echo "→ Running Snyk IaC test..."
             set +e
-            snyk iac test . --json > "/app/snyk-output/snyk-iac-temp-$NAME.json"
+            snyk iac test . --json 2>/dev/null > "/app/snyk-output/snyk-iac-temp-$NAME.json"
             set -e
             
-            jq --arg branch "$CURRENT_BRANCH" --arg url "$URL" --arg route "$ROUTE" --arg name "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" \
-            'if type == "array" then map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}) 
-             else . + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email} end' \
-            "/app/snyk-output/snyk-iac-temp-$NAME.json" > "/app/snyk-output/snyk-iac-test-$NAME.json"
-            
-            curl -s -X POST "$WEBHOOK_URL/snyk-scan/$NAME/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/snyk-output/snyk-iac-test-$NAME.json | jq -r '.message // "IaC Sent"'
-        
+            if jq -e . "/app/snyk-output/snyk-iac-temp-$NAME.json" > /dev/null 2>&1; then
+                jq --arg branch "$CURRENT_BRANCH" --arg url "$URL" --arg route "$ROUTE" --arg name "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" \
+                'if type == "array" then map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}) 
+                 else . + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email} end' \
+                "/app/snyk-output/snyk-iac-temp-$NAME.json" > "/app/snyk-output/snyk-iac-test-$NAME.json"
+                
+                # Cambia snyk-iac-scan por snyk-scan para que coincida con tu nodo n8n
+                curl -s -X POST "$WEBHOOK_URL/snyk-scan/$NAME/$TICKET_ID" \
+                    -H "Content-Type: application/json" \
+                    --data-binary @"/app/snyk-output/snyk-iac-test-$NAME.json"
+            else
+                echo "❌ ERROR: Invalid JSON from Snyk IaC"
+            fi
+
         else
             # ---------------------------------------------------------
             # 2. ESCANEO DE LIBRERÍAS (SCA)
