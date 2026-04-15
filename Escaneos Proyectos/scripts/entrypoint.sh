@@ -98,7 +98,7 @@ jq -c '.[]' snyk.json | while read proj; do
                 "/app/snyk-output/snyk-iac-temp-$NAME.json" > "/app/snyk-output/snyk-iac-test-$NAME.json"
                 
                 # Cambia snyk-iac-scan por snyk-scan para que coincida con tu nodo n8n
-                curl -s -X POST "$WEBHOOK_URL/snyk-scan/$NAME/$TICKET_ID" \
+                curl -s -X POST "$WEBHOOK_URL/snyk-iac/$NAME/$TICKET_ID" \
                     -H "Content-Type: application/json" \
                     --data-binary @"/app/snyk-output/snyk-iac-test-$NAME.json"
             else
