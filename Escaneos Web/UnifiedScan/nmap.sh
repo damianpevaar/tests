@@ -19,7 +19,7 @@ echo "→ Dominio extraído: $DOMAIN"
 echo "→ Corriendo Nmap..."
 NMAP_OUT=$(nmap -sS -T3 -Pn -sV -O --script=default,vuln --open "$DOMAIN" | tr '\n' '\\n')
 
-# Envío a n8n via tmp
+# Envío a n8n
 echo "→ Enviando resultados a n8n..."
 
 PAYLOAD=$(jq -n \
@@ -37,5 +37,8 @@ PAYLOAD=$(jq -n \
     }
   }')
 
-echo "$PAYLOAD" > /tmp/nmap_res.json
+curl -X POST "$N8N_WEBHOOK_URL" \
+  -H "Content-Type: application/json" \
+  -d "$PAYLOAD"
+
 echo "===== ESCANEO FINALIZADO EXITOSAMENTE ====="

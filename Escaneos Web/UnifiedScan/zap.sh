@@ -30,7 +30,10 @@ else
   ZAP_JSON_CONTENT='{"error": "No se generó reporte", "site": []}'
 fi
  
-# 5. Envío a n8n usando tmp 
+# 5. Envío a n8n usando --argjson
+# --argjson permite meter el JSON de ZAP dentro de tu JSON de n8n sin romper formato
+echo "→ Enviando resultados a n8n..."
+ 
 PAYLOAD=$(jq -n \
   --arg target "$TARGET_URL" \
   --arg domain "$DOMAIN" \
@@ -44,5 +47,11 @@ PAYLOAD=$(jq -n \
     results: $zap_results
   }')
  
-echo "$PAYLOAD" > /tmp/zap_res.json
+# Debug (opcional, para ver qué se envía)
+# echo "$PAYLOAD" > /tmp/debug_payload.json
+ 
+curl -X POST "$N8N_WEBHOOK_URL" \
+  -H "Content-Type: application/json" \
+  -d "$PAYLOAD"
+ 
 echo "===== ESCANEO FINALIZADO ====="
