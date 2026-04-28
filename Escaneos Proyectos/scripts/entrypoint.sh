@@ -1,4 +1,3 @@
-
 set -e
 
 echo "===== Starting Scan Runner ====="
@@ -9,11 +8,14 @@ if [[ -z "$STACKHAWK_API_KEY" ]]; then echo "ERROR: Missing STACKHAWK_API_KEY"; 
 if [[ -z "$GITHUB_PAT" ]]; then echo "ERROR: Missing GITHUB_PAT"; exit 1; fi
 if [[ -z "$WEBHOOK_URL" ]]; then echo "ERROR: Missing WEBHOOK_URL"; exit 1; fi
 
-
 echo "→ Applying Git Force-HTTPS Interceptor..."
 git config --global url."https://${GITHUB_PAT}@github.com/".insteadOf "ssh://git@github.com/"
 git config --global url."https://${GITHUB_PAT}@github.com/".insteadOf "git@github.com:"
 git config --global url."https://${GITHUB_PAT}@github.com/".insteadOf "git+ssh://git@github.com/"
+
+git config --global http.version HTTP/1.1
+git config --global http.postBuffer 1048576000
+git config --global core.compression 0
 
 export GIT_ASKPASS=/bin/echo
 export GIT_TERMINAL_PROMPT=0
@@ -163,22 +165,61 @@ jq -c '.[]' snyk.json | while read proj; do
         fi
         
         cd /app/snyk-projects
-    else
-        echo "→ Docker image scan: $NAME"
-        ECR_PASSWORD=$(aws ecr get-login-password --region us-east-1)
-        set +e; snyk container test "${NAME#docker.io/}" --username=AWS --password="$ECR_PASSWORD" --json > "/app/docker-scan-$DOCKER_COUNT-temp.json"; set -e
-        jq --arg image "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" '. + { scannedImage: $image, scan_timestamp: $ts, user_email: $email }' "/app/docker-scan-$DOCKER_COUNT-temp.json" > "/app/docker-scan-$DOCKER_COUNT.json"
-        curl -s -X POST "$WEBHOOK_URL/snyk-container-scan/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/docker-scan-$DOCKER_COUNT.json | jq -r '.message // "Docker Sent"'
+	else
+        echo "→ Docker image scan via Crane: $NAME"
+        
+        # 1. Limpiar el string de cualquier prefijo basura (https://, http://, docker.io/)
+        CLEAN_NAME=$(echo "$NAME" | sed -E 's|^(https?://)?(docker\.io/)?||')
+        
+        # 2. Extraer el registro y la región dinámicamente de la URL limpia
+        REGISTRY=$(echo "$CLEAN_NAME" | cut -d'/' -f1)
+        REGION=$(echo "$REGISTRY" | cut -d'.' -f4)
+        
+        echo "→ DEBUG: CLEAN_NAME = $CLEAN_NAME"
+        echo "→ DEBUG: REGION = $REGION"
+        
+        if [[ -z "$REGION" ]]; then
+            echo "❌ ERROR: No se pudo extraer la región de AWS del string: $CLEAN_NAME"
+            continue
+        fi
+
+        echo "→ Authenticating Crane with ECR in region: $REGION..."
+        aws ecr get-login-password --region "$REGION" | crane auth login --username AWS --password-stdin "$REGISTRY"
+        
+        echo "→ Pulling image as tarball..."
+        # IMPORTANTE: Aquí usamos CLEAN_NAME en lugar de NAME
+        if ! crane pull "$CLEAN_NAME" "/app/image-$DOCKER_COUNT.tar" --platform linux/amd64; then
+            echo "❌ ERROR: Failed to pull image $NAME with Crane. Skipping."
+            continue
+        fi
+        
+        echo "→ Running Snyk Container scan on tarball..."
+        set +e
+        snyk container test "docker-archive:/app/image-$DOCKER_COUNT.tar" --json > "/app/docker-scan-$DOCKER_COUNT-temp.json"
+        SNYK_EXIT_CODE=$?
+        set -e
+        
+        # 3. Enriquecer el JSON y enviar al Webhook
+        jq --arg image "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" \
+           '. + { scannedImage: $image, scan_timestamp: $ts, user_email: $email }' \
+           "/app/docker-scan-$DOCKER_COUNT-temp.json" > "/app/docker-scan-$DOCKER_COUNT.json"
+        
+        curl -s -X POST "$WEBHOOK_URL/snyk-container-scan/$TICKET_ID" \
+             -H "Content-Type: application/json" \
+             --data-binary @"/app/docker-scan-$DOCKER_COUNT.json" | jq -r '.message // "Docker Sent"'
+        
+        # Limpieza para no llenar el disco del Batch
+        rm "/app/image-$DOCKER_COUNT.tar"
+        
         DOCKER_COUNT=$((DOCKER_COUNT+1))
     fi
 done
-
 
 ###############################################
 # Process StackHawk Projects 
 ###############################################
 cd /app/stackhawk-projects
-echo "$STACKHAWK_PROJECTS" > hawk.json
+echo "${STACKHAWK_PROJECTS:-[]}" > hawk.json
 
 jq -c '.[]' hawk.json | while read proj; do
     NAME=$(echo "$proj" | jq -r '.name')
@@ -190,17 +231,24 @@ jq -c '.[]' hawk.json | while read proj; do
     echo "Processing StackHawk project: $NAME"
 
     if [[ "$URL" != "null" && "$URL" != "" ]]; then
-        # 1. Clonado del repositorio
+        
+        # 1. Clonado del repositorio o copia en caché local
         set +e
-        if [[ -n "$TARGET_BRANCH" && "$TARGET_BRANCH" != "null" ]]; then
-            echo "→ Cloning branch [$TARGET_BRANCH]..."
-            git clone -b "$TARGET_BRANCH" --single-branch "https://$GITHUB_PAT@${URL#https://}" "$NAME" --quiet
+        if [ -d "/app/snyk-projects/$NAME/.git" ]; then
+            echo "→ Repo already cloned by Snyk! Copying locally..."
+            cp -r "/app/snyk-projects/$NAME" "/app/stackhawk-projects/$NAME"
+            CLONE_EXIT_CODE=$?
         else
-            echo "→ Cloning default branch..."
-            git clone "https://$GITHUB_PAT@${URL#https://}" "$NAME" --quiet
+            # Si corre solo Stackhawk, entonces sí clona
+            if [[ -n "$TARGET_BRANCH" && "$TARGET_BRANCH" != "null" ]]; then
+                git clone -b "$TARGET_BRANCH" --single-branch "https://$GITHUB_PAT@${URL#https://}" "$NAME" --quiet
+            else
+                git clone "https://$GITHUB_PAT@${URL#https://}" "$NAME" --quiet
+            fi
+            CLONE_EXIT_CODE=$?
         fi
-        CLONE_EXIT_CODE=$?
         set -e
+        # ========================================================
 
         if [ $CLONE_EXIT_CODE -ne 0 ]; then
             echo "❌ ERROR: Failed to clone $NAME. Skipping."
@@ -248,7 +296,7 @@ jq -c '.[]' hawk.json | while read proj; do
                 '. + {git_branch: $branch, ticket_id: $ticket, folder_route: $folder, scan_timestamp: $ts, user_email: $email}' \
                 stackhawk.sarif > payload_hawk.json
                 
-                curl -s -X POST "$WEBHOOK_URL/stackhawk-cloud-sec/$NAME" \
+                curl -s -X POST "$WEBHOOK_URL/stackhawk-cloud/$NAME" \
                      -H "Content-Type: application/json" \
                      --data-binary @payload_hawk.json | jq -r '.message // "Hawk Results Sent"'
             else

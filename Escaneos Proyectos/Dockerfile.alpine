@@ -7,6 +7,10 @@ RUN curl -s https://download.stackhawk.com/hawk/cli/hawk-5.1.0.zip -o /tmp/hawk-
 
 RUN curl -LsSf https://astral.sh/uv/0.10.0/install.sh | env UV_INSTALL_DIR="/usr/local/bin" sh
 
+RUN curl -L "https://github.com/google/go-containerregistry/releases/download/v0.20.2/go-containerregistry_Linux_x86_64.tar.gz" -o crane.tar.gz \
+    && tar -zxvf crane.tar.gz crane \
+    && chmod +x crane
+	
 FROM alpine:3.21
 
 ENV PATH="/opt/hawk-5.1.0:${PATH}"
@@ -18,6 +22,8 @@ RUN apk add --no-cache \
     build-base python3-dev
 
 COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
+
+COPY --from=builder /crane /usr/local/bin/crane
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system --break-system-packages awscli
