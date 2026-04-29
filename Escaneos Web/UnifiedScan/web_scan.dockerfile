@@ -35,8 +35,8 @@ RUN curl -L -o nuclei.zip https://github.com/projectdiscovery/nuclei/releases/do
 RUN nuclei -update-templates -silent
 
 # 6. NIKTO (Instalación Real)
-RUN git clone --depth 1 https://github.com/sullo/nikto.git /opt/nikto \
- && ln -s /opt/nikto/program/nikto.pl /usr/local/bin/nikto
+#RUN git clone --depth 1 https://github.com/sullo/nikto.git /opt/nikto \
+# && ln -s /opt/nikto/program/nikto.pl /usr/local/bin/nikto
 
 # 7. TESTSSL (Instalación Real)
 RUN git clone --depth 1 https://github.com/drwetter/testssl.sh.git /opt/testssl \
