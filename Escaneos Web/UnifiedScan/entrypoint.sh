@@ -3,24 +3,24 @@ set +e
 
 # Intentar tomar de variables de entorno, si no, tomar de argumentos $1 y $2
 URL=${TARGET_URL:-$1}
-TICKET=${TICKET_ID:-$2}
+EMAIL=${USER_EMAIL:-$2}
 
 # Verificación: Si después de intentar ambos, siguen vacíos, dar error
-if [ -z "$URL" ] || [ -z "$TICKET" ]; then
-    echo "🚨 Error: Falta TARGET_URL o TICKET_ID."
-    echo "Uso con variables: docker run -e TARGET_URL=... -e TICKET_ID=..."
-    echo "Uso con argumentos: docker run image <URL> <TICKET_ID>"
+# CORRECCIÓN: Se separaron los brackets y se usó la sintaxis correcta de Bash
+if [ -z "$URL" ] || [ -z "$EMAIL" ]; then
+    echo "🚨 Error: Falta TARGET_URL o EMAIL."
+    echo "Uso con variables: docker run -e TARGET_URL=... -e USER_EMAIL=..."
+    echo "Uso con argumentos: docker run image <URL> <EMAIL>"
     exit 1
 fi
 
 # Exportar para que el script maestro los vea
 export TARGET_URL=$URL
-export TICKET_ID=$TICKET
-
+export USER_EMAIL=$EMAIL
 export FINAL_WEBHOOK="https://mgonzalezg.app.n8n.cloud/webhook/webscan"
 echo "===== SECURITY SCANNER MASTER SYSTEM (CONSOLIDADO) ====="
 echo "→ Target: $TARGET_URL"
-echo "→ Ticket Reference: $TICKET_ID"
+echo "→ Email: $USER_EMAIL"
 
 # 1. Definir rutas
 export RES_ZAP="/tmp/zap_res.json"
@@ -56,9 +56,10 @@ done
 
 # 4. Construcción del Payload Maestro con VARIABLE TICKET
 echo "→ Armando payload en archivo físico..."
+# CORRECCIÓN: Se cambió --arg ticket "$USER_EMAIL" para que jq lo reciba correctamente
 jq -n \
   --arg target "$TARGET_URL" \
-  --arg ticket "$TICKET_ID" \
+  --arg email "$USER_EMAIL" \
   --arg date "$(date '+%Y-%m-%d %H:%M:%S')" \
   --slurpfile zap     "$RES_ZAP" \
   --slurpfile nmap    "$RES_NMAP" \
@@ -69,7 +70,7 @@ jq -n \
     metadata: { 
       target: $target, 
       scan_date: $date,
-      ticket: $ticket 
+      email: $email 
     },
     scans: {
       vulnerabilidades_web_zap: ($zap[0] // {"error": "no_data"}),
@@ -94,4 +95,3 @@ HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
   --data-binary "@$FINAL_PAYLOAD")
 
 echo "→ Respuesta webhook: HTTP $HTTP_CODE"
-echo "===== PROCESO FINALIZADO PARA TICKET: $TICKET_ID ====="
