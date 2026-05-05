@@ -66,6 +66,10 @@ jq -c '.[]' snyk.json | while read proj; do
 
         if [ $CLONE_EXIT_CODE -ne 0 ]; then
             echo "❌ ERROR: Failed to clone $NAME. Skipping."
+            # Notificar a n8n el fallo del clonado
+            curl -s -X POST "$WEBHOOK_URL/snyk-scan/$NAME/$TICKET_ID" \
+                 -H "Content-Type: application/json" \
+                 -d "{\"status\": \"error\", \"error_type\": \"Git Clone Failed\", \"project\": \"$NAME\", \"timestamp\": \"$TIMESTAMP\"}"
             continue
         fi
 
@@ -77,6 +81,10 @@ jq -c '.[]' snyk.json | while read proj; do
                 cd "$ROUTE"
             else
                 echo "❌ ERROR: Folder '$ROUTE' not found."
+                # Notificar a n8n que no se encontró la ruta
+                curl -s -X POST "$WEBHOOK_URL/snyk-scan/$NAME/$TICKET_ID" \
+                     -H "Content-Type: application/json" \
+                     -d "{\"status\": \"error\", \"error_type\": \"Route Not Found\", \"project\": \"$NAME\", \"folder\": \"$ROUTE\", \"timestamp\": \"$TIMESTAMP\"}"
                 cd /app/snyk-projects && continue
             fi
         fi
@@ -140,9 +148,9 @@ jq -c '.[]' snyk.json | while read proj; do
 
             [ -s "/app/snyk-output/snyk-test-$NAME.json" ] && curl -s -X POST "$WEBHOOK_URL/snyk-scan/$NAME/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/snyk-output/snyk-test-$NAME.json | jq -r '.message // "SCA Sent"'
 
-            # ---------------------------------------------------------
-            # 3. ESCANEO DE CÓDIGO FUENTE (SAST) - ¡AQUÍ ESTÁ EL CAMBIO!
-            # ---------------------------------------------------------
+            # -----------------------------------
+            # 3. ESCANEO DE CÓDIGO FUENTE (SAST)
+            # -----------------------------------
             echo "→ Running Snyk Code test (SAST)..."
             set +e
             snyk code test --json > "/app/snyk-output/snyk-code-temp-$NAME.json"
@@ -158,11 +166,56 @@ jq -c '.[]' snyk.json | while read proj; do
         
         cd /app/snyk-projects
     else
+        # ---------------------------------------------------------
+        # 4. ESCANEO DE CONTENEDORES (DOCKER)
+        # ---------------------------------------------------------
         echo "→ Docker image scan: $NAME"
-        ECR_PASSWORD=$(aws ecr get-login-password --region us-east-1)
-        set +e; snyk container test "${NAME#docker.io/}" --username=AWS --password="$ECR_PASSWORD" --json > "/app/docker-scan-$DOCKER_COUNT-temp.json"; set -e
-        jq --arg image "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" '. + { scannedImage: $image, scan_timestamp: $ts, user_email: $email }' "/app/docker-scan-$DOCKER_COUNT-temp.json" > "/app/docker-scan-$DOCKER_COUNT.json"
-        curl -s -X POST "$WEBHOOK_URL/snyk-container-scan/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/docker-scan-$DOCKER_COUNT.json | jq -r '.message // "Docker Sent"'
+        
+        # 1. Autenticación en ECR con captura de errores
+        if ! ECR_PASSWORD=$(aws ecr get-login-password --region us-east-1 2>/tmp/aws-err-$DOCKER_COUNT.log); then
+            echo "❌ ERROR [AWS ECR]: Falló la obtención de credenciales para $NAME. Log:"
+            cat /tmp/aws-err-$DOCKER_COUNT.log
+            curl -s -X POST "$WEBHOOK_URL/snyk-container-scan/$TICKET_ID" \
+                 -H "Content-Type: application/json" \
+                 -d "{\"status\": \"error\", \"error_type\": \"AWS ECR Auth Failed\", \"project\": \"$NAME\", \"stage\": \"Docker Scan\", \"timestamp\": \"$TIMESTAMP\"}"
+            continue
+        fi
+
+        # 2. Escaneo del contenedor de Snyk con evaluación del exit code
+        set +e
+        snyk container test "${NAME#docker.io/}" --username=AWS --password="$ECR_PASSWORD" --json > "/app/docker-scan-$DOCKER_COUNT-temp.json" 2>/tmp/snyk-err-$DOCKER_COUNT.log
+        SNYK_EXIT_CODE=$?
+        set -e
+
+        if [ $SNYK_EXIT_CODE -ge 2 ]; then
+            echo "❌ ERROR [Snyk]: Falló el escaneo del contenedor $NAME. Exit code: $SNYK_EXIT_CODE. Log:"
+            cat /tmp/snyk-err-$DOCKER_COUNT.log
+            curl -s -X POST "$WEBHOOK_URL/snyk-container-scan/$TICKET_ID" \
+                 -H "Content-Type: application/json" \
+                 -d "{\"status\": \"error\", \"error_type\": \"Snyk Container Scan Failed\", \"project\": \"$NAME\", \"exit_code\": $SNYK_EXIT_CODE, \"stage\": \"Docker Scan\", \"timestamp\": \"$TIMESTAMP\"}"
+            continue
+        fi
+
+        # 3. Procesamiento del JSON con JQ
+        if ! jq --arg image "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" '. + { scannedImage: $image, scan_timestamp: $ts, user_email: $email, status: "success" }' "/app/docker-scan-$DOCKER_COUNT-temp.json" > "/app/docker-scan-$DOCKER_COUNT.json" 2>/tmp/jq-err-$DOCKER_COUNT.log; then
+            echo "❌ ERROR [JQ]: Falló la inyección de metadata en el JSON para $NAME. Log:"
+            cat /tmp/jq-err-$DOCKER_COUNT.log
+            curl -s -X POST "$WEBHOOK_URL/snyk-container-scan/$TICKET_ID" \
+                 -H "Content-Type: application/json" \
+                 -d "{\"status\": \"error\", \"error_type\": \"JSON Processing Failed\", \"project\": \"$NAME\", \"stage\": \"Docker Scan\", \"timestamp\": \"$TIMESTAMP\"}"
+            continue
+        fi
+
+        # 4. Envío de resultados finales (Webhook de éxito)
+        if ! curl -s -f -X POST "$WEBHOOK_URL/snyk-container-scan/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/docker-scan-$DOCKER_COUNT.json > /tmp/curl-out-$DOCKER_COUNT.log; then
+            echo "❌ ERROR [Webhook]: Falló el envío del reporte a la API para $NAME."
+            curl -s -X POST "$WEBHOOK_URL/snyk-container-scan/$TICKET_ID" \
+                 -H "Content-Type: application/json" \
+                 -d "{\"status\": \"error\", \"error_type\": \"Final Webhook Delivery Failed\", \"project\": \"$NAME\", \"stage\": \"Docker Scan\", \"timestamp\": \"$TIMESTAMP\"}"
+        else
+            jq -r '.message // "Docker Sent"' /tmp/curl-out-$DOCKER_COUNT.log
+        fi
+
         DOCKER_COUNT=$((DOCKER_COUNT+1))
     fi
 done
