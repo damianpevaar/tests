@@ -1,0 +1,9 @@
+app:
+  applicationId: "84813916-7083-4c85-9f0b-908de57938c6"
+  env: "dev"
+  host: "http://glo-notifications-backend.sta.simetrik.com"
+scan:
+  name: "security review"
+hawk:
+  spider:
+    base: true
