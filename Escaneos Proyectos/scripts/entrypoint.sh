@@ -266,21 +266,25 @@ jq -c '.[]' hawk.json | while read proj; do
             fi
         fi
 
-        # 4. VERIFICACIÓN DE CONFIGURACIÓN
-        if [ ! -f "stackhawk.yml" ]; then
-            echo "❌ ERROR: No stackhawk.yml found in $(pwd). Skipping scan."
+        # 4. VERIFICACIÓN DE CONFIGURACIÓN (Busca cualquier archivo .yml)
+        HAWK_FILE=$(ls *hawk.yml 2>/dev/null | head -n 1)
+
+        if [ -z "$HAWK_FILE" ]; then
+            echo "❌ ERROR: No hawk.yml file found in $(pwd). Skipping scan."
             cd /app/stackhawk-projects
             continue
         fi
+
+        echo "✅ Detected StackHawk config file: $HAWK_FILE"
 
         # 5. Configuración de entorno para Hawk
         CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
         export SARIF_ARTIFACT=true
 
         # 6. Ejecución del Escaneo
-        echo "→ Running hawk scan using repository configuration..."
+        echo "→ Running hawk scan using $HAWK_FILE..."
         set +e
-        hawk scan --no-progress 2>&1 | tee /tmp/hawk_scan_live.log
+        hawk scan "$HAWK_FILE" --no-progress 2>&1 | tee /tmp/hawk_scan_live.log
         SCAN_OUTPUT=$(cat /tmp/hawk_scan_live.log)
         set -e
         
