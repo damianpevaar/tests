@@ -1,4 +1,3 @@
-
 set -e
 
 echo "===== Starting Scan Runner ====="
@@ -8,8 +7,6 @@ if [[ -z "$SNYK_CLIENT_SECRET" ]]; then echo "ERROR: Missing SNYK_CLIENT_SECRET"
 if [[ -z "$STACKHAWK_API_KEY" ]]; then echo "ERROR: Missing STACKHAWK_API_KEY"; exit 1; fi
 if [[ -z "$GITHUB_PAT" ]]; then echo "ERROR: Missing GITHUB_PAT"; exit 1; fi
 if [[ -z "$WEBHOOK_URL" ]]; then echo "ERROR: Missing WEBHOOK_URL"; exit 1; fi
-
-
 
 echo "→ Applying Git Force-HTTPS Interceptor..."
 git config --global url."https://${GITHUB_PAT}@github.com/".insteadOf "ssh://git@github.com/"
@@ -23,12 +20,13 @@ mkdir -p ~/.ssh && chmod 700 ~/.ssh
 touch ~/.ssh/config
 echo -e "Host github.com\n\tStrictHostKeyChecking no\n\tUserKnownHostsFile=/dev/null\n" > ~/.ssh/config
 
-
 TIMESTAMP="${TIMESTAMP:-0}"
 USER_EMAIL="${USER_EMAIL:-0}"
 TICKET_ID="${TICKET_ID:-0}"
+# NUEVO: GROUP_ID (Lectura de la variable de entorno)
+GROUP_ID="${GROUP_ID:-0}"
 
-echo "→ Config: Email [$USER_EMAIL] | Timestamp [$TIMESTAMP] | Ticket [$TICKET_ID]"
+echo "→ Config: Email [$USER_EMAIL] | Timestamp [$TIMESTAMP] | Ticket [$TICKET_ID] | Group ID [$GROUP_ID]"
 
 echo "→ Authenticating Snyk CLI..."
 snyk auth --auth-type=oauth --client-id="$SNYK_CLIENT_ID" --client-secret="$SNYK_CLIENT_SECRET"
@@ -66,10 +64,10 @@ jq -c '.[]' snyk.json | while read proj; do
 
         if [ $CLONE_EXIT_CODE -ne 0 ]; then
             echo "❌ ERROR: Failed to clone $NAME. Skipping."
-            # Notificar a n8n el fallo del clonado
+            # NUEVO: GROUP_ID en error de clonado
             curl -s -X POST "$WEBHOOK_URL/snyk-scan/$NAME/$TICKET_ID" \
                  -H "Content-Type: application/json" \
-                 -d "{\"status\": \"error\", \"error_type\": \"Git Clone Failed\", \"project\": \"$NAME\", \"timestamp\": \"$TIMESTAMP\"}"
+                 -d "{\"status\": \"error\", \"error_type\": \"Git Clone Failed\", \"project\": \"$NAME\", \"timestamp\": \"$TIMESTAMP\", \"group_id\": \"$GROUP_ID\"}"
             continue
         fi
 
@@ -81,10 +79,10 @@ jq -c '.[]' snyk.json | while read proj; do
                 cd "$ROUTE"
             else
                 echo "❌ ERROR: Folder '$ROUTE' not found."
-                # Notificar a n8n que no se encontró la ruta
+                # NUEVO: GROUP_ID en error de ruta
                 curl -s -X POST "$WEBHOOK_URL/snyk-scan/$NAME/$TICKET_ID" \
                      -H "Content-Type: application/json" \
-                     -d "{\"status\": \"error\", \"error_type\": \"Route Not Found\", \"project\": \"$NAME\", \"folder\": \"$ROUTE\", \"timestamp\": \"$TIMESTAMP\"}"
+                     -d "{\"status\": \"error\", \"error_type\": \"Route Not Found\", \"project\": \"$NAME\", \"folder\": \"$ROUTE\", \"timestamp\": \"$TIMESTAMP\", \"group_id\": \"$GROUP_ID\"}"
                 cd /app/snyk-projects && continue
             fi
         fi
@@ -100,9 +98,10 @@ jq -c '.[]' snyk.json | while read proj; do
             snyk iac test . --json > "/app/snyk-output/snyk-iac-temp-$NAME.json"
             set -e
             
-            jq --arg branch "$CURRENT_BRANCH" --arg url "$URL" --arg route "$ROUTE" --arg name "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" \
-            'if type == "array" then map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}) 
-             else . + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email} end' \
+            # NUEVO: GROUP_ID inyectado vía JQ
+            jq --arg branch "$CURRENT_BRANCH" --arg url "$URL" --arg route "$ROUTE" --arg name "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" --arg group "$GROUP_ID" \
+            'if type == "array" then map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email, group_id: $group}) 
+             else . + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email, group_id: $group} end' \
             "/app/snyk-output/snyk-iac-temp-$NAME.json" > "/app/snyk-output/snyk-iac-test-$NAME.json"
             
             curl -s -X POST "$WEBHOOK_URL/snyk-scan/$NAME/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/snyk-output/snyk-iac-test-$NAME.json | jq -r '.message // "IaC Sent"'
@@ -141,9 +140,10 @@ jq -c '.[]' snyk.json | while read proj; do
                 set -e
             fi
 
-            jq --arg branch "$CURRENT_BRANCH" --arg url "$URL" --arg route "$ROUTE" --arg name "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" \
-            'if type == "array" then map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}) 
-             else . + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email} end' \
+            # NUEVO: GROUP_ID inyectado vía JQ
+            jq --arg branch "$CURRENT_BRANCH" --arg url "$URL" --arg route "$ROUTE" --arg name "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" --arg group "$GROUP_ID" \
+            'if type == "array" then map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email, group_id: $group}) 
+             else . + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email, group_id: $group} end' \
             "/app/snyk-output/snyk-test-temp-$NAME.json" > "/app/snyk-output/snyk-test-$NAME.json"
 
             [ -s "/app/snyk-output/snyk-test-$NAME.json" ] && curl -s -X POST "$WEBHOOK_URL/snyk-scan/$NAME/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/snyk-output/snyk-test-$NAME.json | jq -r '.message // "SCA Sent"'
@@ -156,9 +156,10 @@ jq -c '.[]' snyk.json | while read proj; do
             snyk code test --json > "/app/snyk-output/snyk-code-temp-$NAME.json"
             set -e
 
-            jq --arg branch "$CURRENT_BRANCH" --arg url "$URL" --arg route "$ROUTE" --arg name "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" \
-            'if type == "array" then map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email}) 
-             else . + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email} end' \
+            # NUEVO: GROUP_ID inyectado vía JQ
+            jq --arg branch "$CURRENT_BRANCH" --arg url "$URL" --arg route "$ROUTE" --arg name "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" --arg group "$GROUP_ID" \
+            'if type == "array" then map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email, group_id: $group}) 
+             else . + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email, group_id: $group} end' \
             "/app/snyk-output/snyk-code-temp-$NAME.json" > "/app/snyk-output/snyk-code-test-$NAME.json"
 
             [ -s "/app/snyk-output/snyk-code-test-$NAME.json" ] && curl -s -X POST "$WEBHOOK_URL/snyk-code/$NAME/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/snyk-output/snyk-code-test-$NAME.json | jq -r '.message // "SAST Sent"'
@@ -175,9 +176,10 @@ jq -c '.[]' snyk.json | while read proj; do
         if ! ECR_PASSWORD=$(aws ecr get-login-password --region us-east-1 2>/tmp/aws-err-$DOCKER_COUNT.log); then
             echo "❌ ERROR [AWS ECR]: Falló la obtención de credenciales para $NAME. Log:"
             cat /tmp/aws-err-$DOCKER_COUNT.log
+            # NUEVO: GROUP_ID en error
             curl -s -X POST "$WEBHOOK_URL/snyk-container-scan/$TICKET_ID" \
                  -H "Content-Type: application/json" \
-                 -d "{\"status\": \"error\", \"error_type\": \"AWS ECR Auth Failed\", \"project\": \"$NAME\", \"stage\": \"Docker Scan\", \"timestamp\": \"$TIMESTAMP\"}"
+                 -d "{\"status\": \"error\", \"error_type\": \"AWS ECR Auth Failed\", \"project\": \"$NAME\", \"stage\": \"Docker Scan\", \"timestamp\": \"$TIMESTAMP\", \"group_id\": \"$GROUP_ID\"}"
             continue
         fi
 
@@ -190,28 +192,32 @@ jq -c '.[]' snyk.json | while read proj; do
         if [ $SNYK_EXIT_CODE -ge 2 ]; then
             echo "❌ ERROR [Snyk]: Falló el escaneo del contenedor $NAME. Exit code: $SNYK_EXIT_CODE. Log:"
             cat /tmp/snyk-err-$DOCKER_COUNT.log
+            # NUEVO: GROUP_ID en error
             curl -s -X POST "$WEBHOOK_URL/snyk-container-scan/$TICKET_ID" \
                  -H "Content-Type: application/json" \
-                 -d "{\"status\": \"error\", \"error_type\": \"Snyk Container Scan Failed\", \"project\": \"$NAME\", \"exit_code\": $SNYK_EXIT_CODE, \"stage\": \"Docker Scan\", \"timestamp\": \"$TIMESTAMP\"}"
+                 -d "{\"status\": \"error\", \"error_type\": \"Snyk Container Scan Failed\", \"project\": \"$NAME\", \"exit_code\": $SNYK_EXIT_CODE, \"stage\": \"Docker Scan\", \"timestamp\": \"$TIMESTAMP\", \"group_id\": \"$GROUP_ID\"}"
             continue
         fi
 
         # 3. Procesamiento del JSON con JQ
-        if ! jq --arg image "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" '. + { scannedImage: $image, scan_timestamp: $ts, user_email: $email, status: "success" }' "/app/docker-scan-$DOCKER_COUNT-temp.json" > "/app/docker-scan-$DOCKER_COUNT.json" 2>/tmp/jq-err-$DOCKER_COUNT.log; then
+        # NUEVO: GROUP_ID inyectado en el JSON final de Docker
+        if ! jq --arg image "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" --arg group "$GROUP_ID" '. + { scannedImage: $image, scan_timestamp: $ts, user_email: $email, status: "success", group_id: $group }' "/app/docker-scan-$DOCKER_COUNT-temp.json" > "/app/docker-scan-$DOCKER_COUNT.json" 2>/tmp/jq-err-$DOCKER_COUNT.log; then
             echo "❌ ERROR [JQ]: Falló la inyección de metadata en el JSON para $NAME. Log:"
             cat /tmp/jq-err-$DOCKER_COUNT.log
+            # NUEVO: GROUP_ID en error
             curl -s -X POST "$WEBHOOK_URL/snyk-container-scan/$TICKET_ID" \
                  -H "Content-Type: application/json" \
-                 -d "{\"status\": \"error\", \"error_type\": \"JSON Processing Failed\", \"project\": \"$NAME\", \"stage\": \"Docker Scan\", \"timestamp\": \"$TIMESTAMP\"}"
+                 -d "{\"status\": \"error\", \"error_type\": \"JSON Processing Failed\", \"project\": \"$NAME\", \"stage\": \"Docker Scan\", \"timestamp\": \"$TIMESTAMP\", \"group_id\": \"$GROUP_ID\"}"
             continue
         fi
 
         # 4. Envío de resultados finales (Webhook de éxito)
         if ! curl -s -f -X POST "$WEBHOOK_URL/snyk-container-scan/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/docker-scan-$DOCKER_COUNT.json > /tmp/curl-out-$DOCKER_COUNT.log; then
             echo "❌ ERROR [Webhook]: Falló el envío del reporte a la API para $NAME."
+            # NUEVO: GROUP_ID en error
             curl -s -X POST "$WEBHOOK_URL/snyk-container-scan/$TICKET_ID" \
                  -H "Content-Type: application/json" \
-                 -d "{\"status\": \"error\", \"error_type\": \"Final Webhook Delivery Failed\", \"project\": \"$NAME\", \"stage\": \"Docker Scan\", \"timestamp\": \"$TIMESTAMP\"}"
+                 -d "{\"status\": \"error\", \"error_type\": \"Final Webhook Delivery Failed\", \"project\": \"$NAME\", \"stage\": \"Docker Scan\", \"timestamp\": \"$TIMESTAMP\", \"group_id\": \"$GROUP_ID\"}"
         else
             jq -r '.message // "Docker Sent"' /tmp/curl-out-$DOCKER_COUNT.log
         fi
@@ -294,11 +300,12 @@ jq -c '.[]' hawk.json | while read proj; do
         if [[ -n "$SCAN_ID" ]]; then
             if [ -f "stackhawk.sarif" ]; then
                 echo "→ Sending SARIF results to webhook..."
-                jq --arg branch "$CURRENT_BRANCH" --arg ticket "$TICKET_ID" --arg folder "$ROUTE" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" \
-                '. + {git_branch: $branch, ticket_id: $ticket, folder_route: $folder, scan_timestamp: $ts, user_email: $email}' \
+                # NUEVO: GROUP_ID inyectado en el SARIF
+                jq --arg branch "$CURRENT_BRANCH" --arg ticket "$TICKET_ID" --arg folder "$ROUTE" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" --arg group "$GROUP_ID" \
+                '. + {git_branch: $branch, ticket_id: $ticket, folder_route: $folder, scan_timestamp: $ts, user_email: $email, group_id: $group}' \
                 stackhawk.sarif > payload_hawk.json
                 
-                curl -s -X POST "$WEBHOOK_URL/stackhawk-cloud-sec/$NAME" \
+                curl -s -X POST "$WEBHOOK_URL/stackhawk-cloud/$NAME" \
                      -H "Content-Type: application/json" \
                      --data-binary @payload_hawk.json | jq -r '.message // "Hawk Results Sent"'
             else
