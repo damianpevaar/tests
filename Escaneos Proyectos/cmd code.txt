@@ -2,7 +2,7 @@ install: docker build -f Dockerfile.alpine -t scan-runner .
 
 -e TICKET_ID=""
 
-docker run --rm -e TIMESTAMP="0" -e USER_EMAIL="0" -e SNYK_CLIENT_ID="b5fa1047-7052-4c25-8f33-f8e5234ef29d" -e SNYK_CLIENT_SECRET="snyk_cs_ipzUU8NvMK_D_KCRa4uzd15t943sFXPyME2GhV_b7Po__v1" -e STACKHAWK_API_KEY="hawk.ZwQOAPbFwfB0KQ9yNBEa.y9tvp1QplHMfvSuy9MfU" -e GITHUB_PAT="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" -e SNYK_PROJECTS='[{"name":"ag-customers-iac", "url": "https://github.com/damianpevaar/tests", "branch": "main"}]' -e STACKHAWK_PROJECTS='[{"name":"TESTING", "url": "hhttps://github.com/damianpevaar/tests"}]' -e GROUP_ID="11-06-2026 TESTING" -e WEBHOOK_URL='https://mgonzalezg.app.n8n.cloud/webhook/1cbd69f4-e7f2-4002-9738-8f74e551258a' scan-runner:latest
+docker run --rm -e TIMESTAMP="0" -e USER_EMAIL="0" -e SNYK_CLIENT_ID="b5fa1047-7052-4c25-8f33-f8e5234ef29d" -e SNYK_CLIENT_SECRET="snyk_cs_ipzUU8NvMK_D_KCRa4uzd15t943sFXPyME2GhV_b7Po__v1" -e STACKHAWK_API_KEY="hawk.ZwQOAPbFwfB0KQ9yNBEa.y9tvp1QplHMfvSuy9MfU" -e GITHUB_PAT="github_token" -e SNYK_PROJECTS='[{"name":"ag-customers-iac", "url": "https://github.com/damianpevaar/tests", "branch": "main"}]' -e STACKHAWK_PROJECTS='[{"name":"TESTING", "url": "hhttps://github.com/damianpevaar/tests"}]' -e GROUP_ID="11-06-2026 TESTING" -e WEBHOOK_URL='https://mgonzalezg.app.n8n.cloud/webhook/1cbd69f4-e7f2-4002-9738-8f74e551258a' scan-runner:latest
 
 in docker scan case: -e SNYK_PROJECTS='[{"name":"docker.io/766860539595.dkr.ecr.us-east-2.amazonaws.com/dev/ag/backend", "url": ""}]'
 
