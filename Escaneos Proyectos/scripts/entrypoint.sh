@@ -14,12 +14,12 @@ git config --global url."https://${GITHUB_PAT}@github.com/".insteadOf "git@githu
 git config --global url."https://${GITHUB_PAT}@github.com/".insteadOf "git+ssh://git@github.com/"
 
 # NUEVO: Interceptor para Bitbucket (si el token existe)
-if [[ -n "$BITBUCKET_TOKEN" ]]; then
+if [[ -n "$BITBUCKET_TOKEN" && -n "$BITBUCKET_USERNAME" ]]; then
     echo "→ Applying Git Force-HTTPS Interceptor for Bitbucket..."
-    git config --global url."https://x-token-auth:${BITBUCKET_TOKEN}@bitbucket.org/".insteadOf "ssh://git@bitbucket.org/"
-    git config --global url."https://x-token-auth:${BITBUCKET_TOKEN}@bitbucket.org/".insteadOf "git@bitbucket.org:"
+    git config --global url."https://${BITBUCKET_USERNAME}:${BITBUCKET_TOKEN}@bitbucket.org/".insteadOf "ssh://git@bitbucket.org/"
+    git config --global url."https://${BITBUCKET_USERNAME}:${BITBUCKET_TOKEN}@bitbucket.org/".insteadOf "git@bitbucket.org:"
 else
-    echo "⚠️ WARNING: Missing BITBUCKET_TOKEN. Bitbucket clones may fail."
+    echo "⚠️ WARNING: Missing BITBUCKET_TOKEN or BITBUCKET_USERNAME. Bitbucket clones may fail."
 fi
 
 export GIT_ASKPASS=/bin/echo
@@ -43,11 +43,32 @@ snyk auth --auth-type=oauth --client-id="$SNYK_CLIENT_ID" --client-secret="$SNYK
 echo "→ Authenticating StackHawk CLI..."
 hawk init --api-key="$STACKHAWK_API_KEY" > /dev/null
 
-# Función de ayuda para determinar la URL de clonado
+# Normaliza una URL de Bitbucket/GitHub a una URL clonable (.git) y separa el SHA si existe.
+# Imprime dos líneas: la URL del repo y el SHA del commit (vacío si no aplica).
+normalize_repo_url() {
+    local RAW_URL=$1
+    local COMMIT=""
+    # Bitbucket: https://bitbucket.org/<ws>/<repo>/commits/<sha>  o  /commit/<sha>
+    # GitHub:    https://github.com/<owner>/<repo>/commit/<sha>
+    if [[ "$RAW_URL" =~ ^(https://(bitbucket\.org|github\.com)/[^/]+/[^/]+)/commits?/([0-9a-fA-F]+) ]]; then
+        RAW_URL="${BASH_REMATCH[1]}"
+        COMMIT="${BASH_REMATCH[3]}"
+    fi
+    # Quitar query/fragment y trailing slash
+    RAW_URL="${RAW_URL%%\?*}"
+    RAW_URL="${RAW_URL%%#*}"
+    RAW_URL="${RAW_URL%/}"
+    # Asegurar sufijo .git
+    [[ "$RAW_URL" != *.git ]] && RAW_URL="${RAW_URL}.git"
+    echo "$RAW_URL"
+    echo "$COMMIT"
+}
+
+# Función de ayuda para determinar la URL de clonado (con auth embebida)
 get_clone_url() {
     local RAW_URL=$1
     if [[ "$RAW_URL" == *"bitbucket.org"* ]]; then
-        echo "https://x-token-auth:${BITBUCKET_TOKEN}@${RAW_URL#https://}"
+        echo "https://${BITBUCKET_USERNAME}:${BITBUCKET_TOKEN}@${RAW_URL#https://}"
     else
         echo "https://${GITHUB_PAT}@${RAW_URL#https://}"
     fi
@@ -57,7 +78,9 @@ get_clone_url() {
 # Process Snyk Projects
 ###############################################
 cd /app/snyk-projects
-echo "$SNYK_PROJECTS" > snyk.json
+
+# Parche: Convierte comillas simples a dobles si el JSON viene alterado
+echo "$SNYK_PROJECTS" | sed "s/'/\"/g" > snyk.json
 DOCKER_COUNT=1
 
 jq -c '.[]' snyk.json | while read proj; do
@@ -65,17 +88,29 @@ jq -c '.[]' snyk.json | while read proj; do
     URL=$(echo "$proj" | jq -r '.url')
     ROUTE=$(echo "$proj" | jq -r '.route')
     TARGET_BRANCH=$(echo "$proj" | jq -r '.branch // empty')
+    TARGET_COMMIT=$(echo "$proj" | jq -r '.commit // empty')
 
     echo "------------------------------------------------"
     echo "Processing Snyk project: $NAME"
 
     if [[ "$URL" != "null" && "$URL" != "" ]]; then
+        # Normaliza URL y extrae commit embebido si la URL apunta a /commits/<sha>
+        NORM=$(normalize_repo_url "$URL")
+        URL=$(echo "$NORM" | sed -n '1p')
+        URL_COMMIT=$(echo "$NORM" | sed -n '2p')
+        if [[ -z "$TARGET_COMMIT" && -n "$URL_COMMIT" ]]; then
+            TARGET_COMMIT="$URL_COMMIT"
+        fi
+
         CLONE_URL=$(get_clone_url "$URL")
-        
+
         set +e
         if [[ -n "$TARGET_BRANCH" && "$TARGET_BRANCH" != "null" ]]; then
             echo "→ Cloning branch [$TARGET_BRANCH] from $URL"
             git clone -b "$TARGET_BRANCH" --single-branch "$CLONE_URL" "$NAME" --quiet
+        elif [[ -n "$TARGET_COMMIT" ]]; then
+            echo "→ Cloning full history from $URL (will checkout commit $TARGET_COMMIT)"
+            git clone "$CLONE_URL" "$NAME" --quiet
         else
             echo "→ Cloning default branch from $URL"
             git clone "$CLONE_URL" "$NAME" --quiet
@@ -92,6 +127,21 @@ jq -c '.[]' snyk.json | while read proj; do
         fi
 
         cd "/app/snyk-projects/$NAME"
+
+        if [[ -n "$TARGET_COMMIT" ]]; then
+            echo "→ Checking out commit $TARGET_COMMIT"
+            set +e
+            git checkout --quiet "$TARGET_COMMIT"
+            CHECKOUT_EXIT_CODE=$?
+            set -e
+            if [ $CHECKOUT_EXIT_CODE -ne 0 ]; then
+                echo "❌ ERROR: Failed to checkout commit $TARGET_COMMIT in $NAME. Skipping."
+                curl -s -X POST "$WEBHOOK_URL/snyk-scan/$NAME/$TICKET_ID" \
+                     -H "Content-Type: application/json" \
+                     -d "{\"status\": \"error\", \"error_type\": \"Git Checkout Failed\", \"project\": \"$NAME\", \"commit\": \"$TARGET_COMMIT\", \"timestamp\": \"$TIMESTAMP\", \"group_id\": \"$GROUP_ID\"}"
+                cd /app/snyk-projects && continue
+            fi
+        fi
         
         if [[ "$ROUTE" != "" && "$ROUTE" != "null" ]]; then
             if [ -d "$ROUTE" ]; then
@@ -107,6 +157,7 @@ jq -c '.[]' snyk.json | while read proj; do
         fi
 
         CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+        [[ "$CURRENT_BRANCH" == "HEAD" && -n "$TARGET_COMMIT" ]] && CURRENT_BRANCH="$TARGET_COMMIT"
 
         # 1. ESCANEO DE INFRAESTRUCTURA (IaC)
         if [[ "$URL" =~ [iI][aA][cC] ]]; then
@@ -129,7 +180,7 @@ jq -c '.[]' snyk.json | while read proj; do
             if [ -f "uv.lock" ]; then
                 echo "→ [SCA] uv.lock detected. Synchronizing environment..."
                 sed -i "s|ssh://git@github.com/|https://${GITHUB_PAT}@github.com/|g" uv.lock pyproject.toml 2>/dev/null || true
-                sed -i "s|ssh://git@bitbucket.org/|https://x-token-auth:${BITBUCKET_TOKEN}@bitbucket.org/|g" uv.lock pyproject.toml 2>/dev/null || true
+                sed -i "s|ssh://git@bitbucket.org/|https://${BITBUCKET_USERNAME}:${BITBUCKET_TOKEN}@bitbucket.org/|g" uv.lock pyproject.toml 2>/dev/null || true
                 
                 uv pip install --system --break-system-packages -r pyproject.toml 2>/dev/null || true
                 UV_SYSTEM_PYTHON=1 uv export --format requirements-txt --no-dev --output-file snyk-requirements.txt
@@ -229,17 +280,28 @@ jq -c '.[]' hawk.json | while read proj; do
     URL=$(echo "$proj" | jq -r '.url')
     ROUTE=$(echo "$proj" | jq -r '.route')
     TARGET_BRANCH=$(echo "$proj" | jq -r '.branch // empty')
+    TARGET_COMMIT=$(echo "$proj" | jq -r '.commit // empty')
 
     echo "------------------------------------------------"
     echo "Processing StackHawk project: $NAME"
 
     if [[ "$URL" != "null" && "$URL" != "" ]]; then
+        NORM=$(normalize_repo_url "$URL")
+        URL=$(echo "$NORM" | sed -n '1p')
+        URL_COMMIT=$(echo "$NORM" | sed -n '2p')
+        if [[ -z "$TARGET_COMMIT" && -n "$URL_COMMIT" ]]; then
+            TARGET_COMMIT="$URL_COMMIT"
+        fi
+
         CLONE_URL=$(get_clone_url "$URL")
-        
+
         set +e
         if [[ -n "$TARGET_BRANCH" && "$TARGET_BRANCH" != "null" ]]; then
             echo "→ Cloning branch [$TARGET_BRANCH]..."
             git clone -b "$TARGET_BRANCH" --single-branch "$CLONE_URL" "$NAME" --quiet
+        elif [[ -n "$TARGET_COMMIT" ]]; then
+            echo "→ Cloning full history (will checkout commit $TARGET_COMMIT)..."
+            git clone "$CLONE_URL" "$NAME" --quiet
         else
             echo "→ Cloning default branch..."
             git clone "$CLONE_URL" "$NAME" --quiet
@@ -253,6 +315,18 @@ jq -c '.[]' hawk.json | while read proj; do
         fi
 
         cd "/app/stackhawk-projects/$NAME"
+
+        if [[ -n "$TARGET_COMMIT" ]]; then
+            echo "→ Checking out commit $TARGET_COMMIT"
+            set +e
+            git checkout --quiet "$TARGET_COMMIT"
+            CHECKOUT_EXIT_CODE=$?
+            set -e
+            if [ $CHECKOUT_EXIT_CODE -ne 0 ]; then
+                echo "❌ ERROR: Failed to checkout commit $TARGET_COMMIT in $NAME. Skipping."
+                cd /app/stackhawk-projects && continue
+            fi
+        fi
         
         if [[ "$ROUTE" != "" && "$ROUTE" != "null" ]]; then
             if [ -d "$ROUTE" ]; then
@@ -273,6 +347,7 @@ jq -c '.[]' hawk.json | while read proj; do
 
         echo "✅ Detected StackHawk config file: $HAWK_FILE"
         CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+        [[ "$CURRENT_BRANCH" == "HEAD" && -n "$TARGET_COMMIT" ]] && CURRENT_BRANCH="$TARGET_COMMIT"
         export SARIF_ARTIFACT=true
 
         echo "→ Running hawk scan using $HAWK_FILE..."
