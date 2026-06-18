@@ -277,6 +277,9 @@ jq -c '.[]' hawk.json | while read proj; do
 
         if [ -z "$HAWK_FILE" ]; then
             echo "❌ ERROR: No hawk.yml file found in $(pwd). Skipping scan."
+            curl -s -X POST "$WEBHOOK_URL/stackhawk-cloud/$NAME" \
+                 -H "Content-Type: application/json" \
+                 -d "{\"status\": \"error\", \"error_type\": \"Hawk Config Not Found\", \"project\": \"$NAME\", \"folder\": \"$ROUTE\", \"ticket_id\": \"$TICKET_ID\", \"timestamp\": \"$TIMESTAMP\", \"user_email\": \"$USER_EMAIL\", \"group_id\": \"$GROUP_ID\"}"
             cd /app/stackhawk-projects
             continue
         fi
@@ -310,9 +313,15 @@ jq -c '.[]' hawk.json | while read proj; do
                      --data-binary @payload_hawk.json | jq -r '.message // "Hawk Results Sent"'
             else
                 echo "⚠️ WARNING: stackhawk.sarif not found. Skipping webhook."
+                curl -s -X POST "$WEBHOOK_URL/stackhawk-cloud/$NAME" \
+                     -H "Content-Type: application/json" \
+                     -d "{\"status\": \"error\", \"error_type\": \"SARIF Not Generated\", \"project\": \"$NAME\", \"scan_id\": \"$SCAN_ID\", \"ticket_id\": \"$TICKET_ID\", \"timestamp\": \"$TIMESTAMP\", \"user_email\": \"$USER_EMAIL\", \"group_id\": \"$GROUP_ID\"}"
             fi
         else
             echo "❌ ERROR: Hawk scan failed. Check logs above."
+            curl -s -X POST "$WEBHOOK_URL/stackhawk-cloud/$NAME" \
+                 -H "Content-Type: application/json" \
+                 -d "{\"status\": \"error\", \"error_type\": \"Hawk Scan Failed\", \"project\": \"$NAME\", \"ticket_id\": \"$TICKET_ID\", \"timestamp\": \"$TIMESTAMP\", \"user_email\": \"$USER_EMAIL\", \"group_id\": \"$GROUP_ID\"}"
         fi
     fi
     
