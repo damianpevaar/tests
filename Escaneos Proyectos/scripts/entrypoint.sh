@@ -90,6 +90,8 @@ while read proj; do
     ROUTE=$(echo "$proj" | jq -r '.route')
     TARGET_BRANCH=$(echo "$proj" | jq -r '.branch // empty')
     TARGET_COMMIT=$(echo "$proj" | jq -r '.commit // empty')
+    # NUEVO: file restringe el escaneo SAST a un solo archivo (opcional).
+    SCAN_FILE=$(echo "$proj" | jq -r '.file // empty')
 
     echo "------------------------------------------------"
     echo "Processing Snyk project: $NAME"
@@ -160,20 +162,26 @@ while read proj; do
         CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
         [[ "$CURRENT_BRANCH" == "HEAD" && -n "$TARGET_COMMIT" ]] && CURRENT_BRANCH="$TARGET_COMMIT"
 
+        # ---------------------------------------------------------
+        # 1. ESCANEO DE INFRAESTRUCTURA (IaC)
+        # ---------------------------------------------------------
         if [[ "$URL" =~ [iI][aA][cC] ]]; then
             echo "→ Running Snyk IaC test..."
             set +e
             snyk iac test . --json > "/app/snyk-output/snyk-iac-temp-$NAME.json"
             set -e
-            
+
             jq --arg branch "$CURRENT_BRANCH" --arg url "$URL" --arg route "$ROUTE" --arg name "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" --arg group "$GROUP_ID" \
-            'if type == "array" then map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email, group_id: $group}) 
+            'if type == "array" then map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email, group_id: $group})
              else . + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email, group_id: $group} end' \
             "/app/snyk-output/snyk-iac-temp-$NAME.json" > "/app/snyk-output/snyk-iac-test-$NAME.json"
-            
+
             curl -s -X POST "$WEBHOOK_URL/snyk-iac/$NAME/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/snyk-output/snyk-iac-test-$NAME.json | jq -r '.message // "IaC Sent"'
-        
+
         else
+            # -----------------------------------------------------
+            # 2. ESCANEO DE LIBRERÍAS (SCA)
+            # -----------------------------------------------------
             echo "→ Running Snyk SCA (Dependencies)..."
 
             if [ -f "uv.lock" ]; then
@@ -200,25 +208,42 @@ while read proj; do
             fi
 
             jq --arg branch "$CURRENT_BRANCH" --arg url "$URL" --arg route "$ROUTE" --arg name "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" --arg group "$GROUP_ID" \
-            'if type == "array" then map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email, group_id: $group}) 
+            'if type == "array" then map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email, group_id: $group})
              else . + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email, group_id: $group} end' \
             "/app/snyk-output/snyk-test-temp-$NAME.json" > "/app/snyk-output/snyk-test-$NAME.json"
 
             [ -s "/app/snyk-output/snyk-test-$NAME.json" ] && curl -s -X POST "$WEBHOOK_URL/snyk-scan/$NAME/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/snyk-output/snyk-test-$NAME.json | jq -r '.message // "SCA Sent"'
 
-            echo "→ Running Snyk Code test (SAST)..."
+            # -----------------------------------------------------
+            # 3. ESCANEO DE CÓDIGO FUENTE (SAST) — opcionalmente un solo archivo vía 'file'
+            # -----------------------------------------------------
+            SAST_TARGET="."
+            if [[ -n "$SCAN_FILE" && "$SCAN_FILE" != "null" ]]; then
+                if [ -f "$SCAN_FILE" ]; then
+                    SAST_TARGET="$SCAN_FILE"
+                    echo "→ [SAST] Restringiendo escaneo a un solo archivo: $SCAN_FILE"
+                else
+                    echo "❌ ERROR: File '$SCAN_FILE' not found in $(pwd)."
+                    curl -s -X POST "$WEBHOOK_URL/snyk-code/$NAME/$TICKET_ID" \
+                         -H "Content-Type: application/json" \
+                         -d "{\"status\": \"error\", \"error_type\": \"File Not Found\", \"project\": \"$NAME\", \"file\": \"$SCAN_FILE\", \"timestamp\": \"$TIMESTAMP\", \"group_id\": \"$GROUP_ID\"}"
+                    cd /app/snyk-projects && continue
+                fi
+            fi
+
+            echo "→ Running Snyk Code test (SAST) on [$SAST_TARGET]..."
             set +e
-            snyk code test --json > "/app/snyk-output/snyk-code-temp-$NAME.json"
+            snyk code test "$SAST_TARGET" --json > "/app/snyk-output/snyk-code-temp-$NAME.json"
             set -e
 
-            jq --arg branch "$CURRENT_BRANCH" --arg url "$URL" --arg route "$ROUTE" --arg name "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" --arg group "$GROUP_ID" \
-            'if type == "array" then map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email, group_id: $group}) 
-             else . + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email, group_id: $group} end' \
+            jq --arg branch "$CURRENT_BRANCH" --arg url "$URL" --arg route "$ROUTE" --arg name "$NAME" --arg ts "$TIMESTAMP" --arg email "$USER_EMAIL" --arg group "$GROUP_ID" --arg file "$SCAN_FILE" \
+            'if type == "array" then map(. + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email, group_id: $group, scanned_file: $file})
+             else . + {git_branch: $branch, repo_url: $url, folder_route: $route, project_name: $name, scan_timestamp: $ts, user_email: $email, group_id: $group, scanned_file: $file} end' \
             "/app/snyk-output/snyk-code-temp-$NAME.json" > "/app/snyk-output/snyk-code-test-$NAME.json"
 
             [ -s "/app/snyk-output/snyk-code-test-$NAME.json" ] && curl -s -X POST "$WEBHOOK_URL/snyk-code/$NAME/$TICKET_ID" -H "Content-Type: application/json" --data-binary @/app/snyk-output/snyk-code-test-$NAME.json | jq -r '.message // "SAST Sent"'
         fi
-        
+
         cd /app/snyk-projects
     else
         # ---------------------------------------------------------
