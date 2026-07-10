@@ -1,0 +1,18 @@
+docker build -f promptfoo.dockerfile -t promptfoo-runner:latest .
+
+
+docker run --rm \
+  -e TICKET_ID="RSR-XX" \
+  -e GROUP_ID="" \
+  -e GITHUB_TOKEN="" \
+  -e REPO_URL="https://github.com/simetrik-inc/agents-factory" \
+  -e REPO_PATH="naranja_x" \
+  promptfoo-runner:latest
+
+  docker run --rm \
+  -e TICKET_ID="RSR-XX" \
+  -e GROUP_ID=""  \
+  -e GITHUB_TOKEN="" \
+  -e REPO_URL="https://github.com/simetrik-inc/agents-factory" \
+  -e REPO_PATH="smart-parser" \
+  promptfoo-runner:latest
