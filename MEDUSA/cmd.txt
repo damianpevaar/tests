@@ -1,0 +1,9 @@
+docker build -f dockerfile -t medusa-scanner:latest .
+
+docker run --rm \
+  -e REPO_URL="https://github.com/simetrik-inc/integration-ai-agent" \
+  -e BRANCH="main" \
+  -e TICKET_ID="RSR-999" \
+  -e GROUP_ID="group_test123" \
+  -e USER_EMAIL="test@simetrik.com" \
+  medusa-scanner:latest
